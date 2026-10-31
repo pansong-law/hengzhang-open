@@ -10,6 +10,7 @@ export const SOURCE_PATHS = [
   "LICENSE",
   "LICENSE.md",
   "衡账开源介绍.md",
+  "docs/screenshots",
   "启动衡账.command",
   "server.js",
   "desktop",

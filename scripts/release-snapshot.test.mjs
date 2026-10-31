@@ -20,6 +20,11 @@ test("published source snapshot independently starts the server and rejects a mi
   try {
     const snapshot = path.join(dir, "source");
     copySourceSnapshot(root, snapshot);
+    const readme = fs.readFileSync(path.join(snapshot, "README.md"), "utf8");
+    for (const line of readme.split(String.fromCharCode(10)).filter((line) => line.startsWith("!["))) {
+      const image = line.slice(line.lastIndexOf("](") + 2, -1);
+      assert(fs.statSync(path.join(snapshot, image)).isFile(), "发布快照缺少 README 图片：" + image);
+    }
     const { createLocalApp } = await import(pathToFileURL(path.join(snapshot, "server.js")));
     app = createLocalApp({ dataDir: path.join(dir, "data") });
     const origin = await app.start();
