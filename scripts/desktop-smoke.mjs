@@ -17,7 +17,7 @@ const APP_VERSION = JSON.parse(
 ).version;
 let application;
 const executable = process.env.HZ_APP_EXECUTABLE;
-async function launch() {
+async function launch(expectedMotto = "热爱法律，笃行正义。") {
   application = await electron.launch({
     ...(executable
       ? { executablePath: executable, args: [] }
@@ -36,7 +36,7 @@ async function launch() {
       external.push(r.url());
   });
   await expect(
-    page.getByRole("heading", { name: "热爱法律，笃行正义。" }),
+    page.getByRole("heading", { name: expectedMotto }),
   ).toBeVisible();
   await application.evaluate(({ BrowserWindow }, dir) => {
     globalThis.testDownloads = [];
@@ -275,6 +275,13 @@ try {
     fullPage: true,
   });
   await page.getByRole("button", { name: "设置与备份", exact: true }).click();
+  await page.locator("[name=dashboard_motto]").fill("以法为业，守护公正。");
+  await page.getByRole("button", { name: "保存格言", exact: true }).click();
+  await page.getByRole("button", { name: "工作台", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "以法为业，守护公正。", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "设置与备份", exact: true }).click();
   await expect(page.locator("[data-homepage]")).toHaveAttribute(
     "href",
     "https://aifalv.vip/",
@@ -326,7 +333,7 @@ try {
   });
   await closeApplication();
   application = null;
-  page = await launch();
+  page = await launch("以法为业，守护公正。");
   const restarted = await request(page, "workspace");
   assert.equal(restarted.cases.length, 4);
   assert.equal(
@@ -337,6 +344,15 @@ try {
     restarted.cases.find((x) => x.id === c.id).fee_summary.invoiced_unpaid,
     3250.05,
   );
+  await page.getByRole("button", { name: "设置与备份", exact: true }).click();
+  await expect(page.locator("[name=dashboard_motto]")).toHaveValue(
+    "以法为业，守护公正。",
+  );
+  await page.getByRole("button", { name: "恢复默认", exact: true }).click();
+  await page.getByRole("button", { name: "工作台", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "热爱法律，笃行正义。", exact: true }),
+  ).toBeVisible();
   // Exercise native IPC and update rendering without creating a fake GitHub release.
   await page.getByRole("button", { name: "设置与备份", exact: true }).click();
   await application.evaluate(({ net, shell }) => {

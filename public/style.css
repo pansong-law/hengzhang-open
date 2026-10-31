@@ -1038,3 +1038,8 @@ dialog::backdrop {
     flex-wrap: wrap;
   }
 }
+
+.welcome-strip {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

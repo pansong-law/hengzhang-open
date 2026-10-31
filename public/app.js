@@ -276,7 +276,9 @@ function renderDash() {
   const content =
     '<div class="page-heading"><div class="welcome-strip"><div class="eyebrow">' +
     today().replaceAll("-", " / ") +
-    "</div><h1>热爱法律，笃行正义。</h1><p>在办 " +
+    "</div><h1>" +
+    esc(data.preferences.dashboard_motto) +
+    "</h1><p>在办 " +
     data.summary.active +
     " 件 · 共 " +
     data.summary.count +
@@ -653,7 +655,9 @@ function renderSettings() {
   $("#content").innerHTML =
     '<div class="page-heading"><div><h1>设置与备份</h1><p>保存一份完整备份，换电脑或需要时可以恢复。</p></div></div><section id="software-updates" class="panel">' +
     (window.HzUpdates?.panel() || "") +
-    '</section><section class="panel"><h2>数据备份</h2><div class="setting-row"><div><strong>导出完整备份</strong><p>包含全部案件、收款流水、进展和提醒。可保存到移动硬盘或其他设备。</p></div><button class="primary" data-action="backup-export">导出备份</button></div><div class="setting-row"><div><strong>从备份文件恢复</strong><p>先预览文件内容，再确认替换当前数据；替换前会自动保留一份备份。</p></div><button data-action="backup-import">选择备份文件</button></div><div class="setting-row"><div><strong>自动备份</strong><p>启动时及使用中定期保留备份；导入、删除、恢复前另做备份。保留最近 30 份，均位于本机。</p></div>' +
+    '</section><section class="panel"><h2>工作台格言</h2><form id="motto-form"><label>自定义格言<input name="dashboard_motto" maxlength="60" value="' +
+    esc(data.preferences.dashboard_motto) +
+    '"></label><p class="hint">最多 60 字，留空保存可恢复默认格言。</p><p class="form-error" role="alert" hidden></p><div class="page-actions"><button type="button" data-action="reset-motto">恢复默认</button><button class="primary" type="submit">保存格言</button></div></form></section><section class="panel"><h2>数据备份</h2><div class="setting-row"><div><strong>导出完整备份</strong><p>包含全部案件、收款流水、进展和提醒。可保存到移动硬盘或其他设备。</p></div><button class="primary" data-action="backup-export">导出备份</button></div><div class="setting-row"><div><strong>从备份文件恢复</strong><p>先预览文件内容，再确认替换当前数据；替换前会自动保留一份备份。</p></div><button data-action="backup-import">选择备份文件</button></div><div class="setting-row"><div><strong>自动备份</strong><p>启动时及使用中定期保留备份；导入、删除、恢复前另做备份。保留最近 30 份，均位于本机。</p></div>' +
     badge("已开启", "good") +
     '</div></section><section class="panel"><div class="panel-head"><h2>最近的本机备份</h2><span class="small muted">' +
     (backupInfo?.backups.length || 0) +
@@ -683,6 +687,26 @@ function renderSettings() {
     '>在访达中打开</button></div></section><p class="hint">衡账 · Mac 本地版 ' +
     esc(data.version) +
     ' · 开发者：<a href="https://aifalv.vip/" target="_blank" rel="noopener noreferrer" data-homepage>潘松律师</a></p>';
+  const mottoForm = $("#motto-form");
+  mottoForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = mottoForm.querySelector("[type=submit]"),
+      error = mottoForm.querySelector(".form-error");
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      await api("preferences", "PUT", {
+        dashboard_motto: mottoForm.elements.dashboard_motto.value,
+      });
+      await refresh();
+      notice("工作台格言已保存");
+    } catch (failure) {
+      error.textContent = failure.message;
+      error.hidden = false;
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 async function editor(id = null, renew = false) {
   let c = id
@@ -1353,6 +1377,11 @@ $("#backup-file").onchange = async (e) => {
   }
 };
 const actions = {
+  "reset-motto": async () => {
+    await api("preferences", "PUT", { dashboard_motto: "" });
+    await refresh();
+    notice("已恢复默认格言");
+  },
   refresh: async () => {
     await refresh();
     notice("已读取最新本机数据");
