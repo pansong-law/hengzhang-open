@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>衡账 · 个人案件与费用管理</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/vendor/xlsx.full.min.js" defer></script>
+    <script src="/app.js" defer></script>
+    <script src="/updates.js" defer></script>
+  </head>
+  <body>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <div class="desk">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <div class="wordmark">衡账<span>本地版</span></div>
+          <p>个人案件与费用管理</p>
+        </div>
+        <nav aria-label="主导航">
+          <button data-nav="dash" class="nav-active">
+            <span aria-hidden="true">▦</span>工作台</button
+          ><button data-nav="cases">
+            <span aria-hidden="true">▤</span>案件台账</button
+          ><button data-nav="settings">
+            <span aria-hidden="true">⊞</span>设置与备份
+          </button>
+        </nav>
+        <div class="sidebar-bottom">
+          <span class="local-dot"></span>
+          <div>
+            <strong>保存在这台 Mac</strong>
+          </div>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <span id="crumb">工作台</span>
+          <div class="header-updates">
+            <span id="data-updated"></span
+            ><button class="text-button" data-action="refresh">刷新</button>
+          </div>
+        </header>
+        <aside
+          id="update-banner"
+          class="update-banner"
+          aria-label="新版本提醒"
+          hidden
+        ></aside>
+        <div class="main-body" id="content">
+          <div class="empty"><strong>正在读取本地数据…</strong></div>
+        </div>
+      </main>
+    </div>
+    <dialog id="modal" aria-labelledby="modal-title">
+      <div class="modal-top">
+        <h2 id="modal-title"></h2>
+        <button id="close-modal" class="icon-button" aria-label="关闭">
+          ×
+        </button>
+      </div>
+      <div id="modal-body"></div>
+    </dialog>
+    <input id="import-file" type="file" accept=".xlsx,.xls,.csv" hidden /><input
+      id="backup-file"
+      type="file"
+      accept=".json"
+      hidden
+    />
+  </body>
+</html>

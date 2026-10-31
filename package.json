@@ -1,0 +1,65 @@
+{
+  "name": "hengzhang-local",
+  "version": "1.0.3",
+  "private": true,
+  "description": "衡账 · 个人案件与律师费管理（Mac 本地版）",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev:server": "node server.js",
+    "test": "node --test scripts/local.test.mjs scripts/updates.test.mjs",
+    "test:desktop": "node scripts/desktop-smoke.mjs",
+    "pack:mac": "electron-builder --mac --dir --universal",
+    "dist:mac": "electron-builder --mac dmg --universal",
+    "release:preview": "node scripts/publish-release.mjs",
+    "release": "node scripts/publish-release.mjs --publish"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0"
+  },
+  "productName": "衡账",
+  "author": {
+    "name": "潘松律师",
+    "url": "https://aifalv.vip/"
+  },
+  "main": "desktop/main.mjs",
+  "build": {
+    "appId": "top.ready2021.hengzhang.local",
+    "productName": "衡账",
+    "directories": {
+      "output": "dist",
+      "buildResources": "desktop/assets"
+    },
+    "files": [
+      "desktop/**/*",
+      "server.js",
+      "lib/**/*.js",
+      "public/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "desktop/assets/icon.icns",
+      "identity": "-",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "title": "衡账",
+      "artifactName": "Hengzhang-${version}-${arch}.dmg"
+    }
+  },
+  "homepage": "https://aifalv.vip/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pansong-law/hengzhang-mac.git"
+  }
+}
