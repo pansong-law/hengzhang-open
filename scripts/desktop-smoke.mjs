@@ -53,6 +53,19 @@ async function launch() {
   }, downloads);
   return page;
 }
+async function closeApplication() {
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    application?.process().kill("SIGTERM");
+  }, 15000);
+  try {
+    await application.close();
+    if (timedOut) throw Error("App 退出超时");
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function downloadCount() {
   return application.evaluate(() => globalThis.testDownloads.length);
 }
@@ -311,7 +324,7 @@ try {
     path: path.join(workspace, "备份恢复.png"),
     fullPage: true,
   });
-  await application.close();
+  await closeApplication();
   application = null;
   page = await launch();
   const restarted = await request(page, "workspace");
@@ -450,6 +463,6 @@ try {
     ),
   );
 } finally {
-  if (application) await application.close();
+  if (application) await closeApplication();
   fs.rmSync(dataDir, { recursive: true, force: true });
 }

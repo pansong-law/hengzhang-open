@@ -182,6 +182,7 @@ try {
     "--repo",
     repository,
     "--verify-tag",
+    "--latest",
     "--title",
     "衡账 Mac 本地版 " + pkg.version,
     "--notes-file",
@@ -190,6 +191,8 @@ try {
   const release = JSON.parse(
     run("gh", ["api", "repos/" + repository + "/releases/tags/" + tag]),
   );
+  if (release.draft || release.prerelease)
+    throw Error("安装包已上传，但尚未成为正式发布版本");
   const asset = release.assets.find((a) => a.name === path.basename(dmg));
   if (
     !asset ||

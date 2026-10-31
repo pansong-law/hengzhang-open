@@ -209,6 +209,7 @@ export class ReleaseUpdates {
     this.emit({ status: "checking", message: "正在检查新版本…" });
     const controller = new AbortController(),
       timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    this.controller = controller;
     try {
       const root = "https://api.github.com/repos/" + this.repository;
       let token = null,
@@ -272,7 +273,11 @@ export class ReleaseUpdates {
       });
     } finally {
       clearTimeout(timer);
+      if (this.controller === controller) this.controller = null;
     }
+  }
+  stop() {
+    this.controller?.abort();
   }
   downloadPage() {
     if (!this.state.available || !this.state.releaseUrl)

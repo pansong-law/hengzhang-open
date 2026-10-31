@@ -323,7 +323,9 @@ else {
           );
           window.once("ready-to-show", () => window.show());
           window.webContents.once("did-finish-load", () => {
-            const timer = setTimeout(() => void updates.check(), 2500);
+            const timer = setTimeout(() => {
+              if (!quitting) void updates.check();
+            }, 2500);
             timer.unref();
           });
           window.on("closed", () => {
@@ -346,6 +348,7 @@ else {
         event.preventDefault();
         quitting = true;
         clearInterval(updateInterval);
+        updates?.stop();
         backend.close().finally(() => app.quit());
       }
     });
