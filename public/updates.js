@@ -44,7 +44,7 @@
         : "") +
       '<label class="update-toggle"><input id="automatic-updates" type="checkbox"' +
       (state?.automatic !== false ? " checked" : "") +
-      '>启动后自动检查新版本</label><p class="hint">只检查版本信息，不上传案件。下载新版后，退出衡账并替换 App 即可。</p>' +
+      '>每 48 小时自动检查新版本</label><p class="hint">距上次自动检查满 48 小时后检查，重启应用不会重新计时。只检查版本信息，不上传案件。下载新版后，退出衡账并替换 App 即可。</p>' +
       (state?.lastCheckedAt
         ? '<p class="hint">上次成功检查：' +
           esc(
@@ -53,14 +53,7 @@
             }),
           ) +
           "</p>"
-        : "") +
-      '<details class="update-access"><summary>私有版本访问</summary><p class="hint">私有测试阶段需要仓库读取权限。已登录本机 GitHub CLI 时会自动使用已有授权；也可单独保存仅有本仓库内容读取权限的访问令牌。凭据在本机加密保存。</p><button data-update="access">' +
-      (state?.storedAccess ? "修改访问授权" : "设置访问授权") +
-      "</button>" +
-      (state?.storedAccess
-        ? ' <button class="text-button" data-update="clear-access">移除已保存授权</button>'
-        : "") +
-      "</details>"
+        : "")
     );
   }
   function paint() {
@@ -102,7 +95,7 @@
       esc(state.latestVersion) +
       '</p><h3>更新说明</h3><div class="pre update-notes">' +
       esc(state.notes) +
-      '</div><p class="hint">前往 GitHub 发布页下载 DMG。私有测试阶段，请用有仓库权限的 GitHub 账号打开下载页。更新前建议导出完整备份，退出衡账后替换 App。</p><div class="form-actions"><button data-update="later">稍后再说</button><button class="primary" data-update="download">前往下载页</button></div>';
+      '</div><p class="hint">前往 GitHub 发布页下载 DMG。更新前建议导出完整备份，退出衡账后替换 App。</p><div class="form-actions"><button data-update="later">稍后再说</button><button class="primary" data-update="download">前往下载页</button></div>';
     $("#modal").showModal();
   }
   async function check() {
@@ -118,33 +111,6 @@
       checking = false;
       paint();
     }
-  }
-  function access() {
-    if ($("#modal").open) return;
-    $("#modal-title").textContent = "私有版本访问授权";
-    $("#modal-body").innerHTML =
-      '<form id="update-access-form"><p class="hint">填写有本仓库内容读取权限的 GitHub 访问令牌。令牌仅用于读取版本信息，不会写入案件备份或公开代码。</p><label>GitHub 访问令牌<input type="password" name="token" autocomplete="off" required maxlength="512"></label><p class="form-error" role="alert" hidden></p><div class="form-actions"><button type="button" data-update="later">取消</button><button class="primary" type="submit">保存并检查更新</button></div></form>';
-    $("#modal").showModal();
-    $("#update-access-form").onsubmit = async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget,
-        button = form.querySelector("[type=submit]"),
-        error = form.querySelector(".form-error"),
-        token = form.elements.token.value.trim();
-      form.elements.token.value = "";
-      button.disabled = true;
-      error.hidden = true;
-      try {
-        adopt(await bridge.setUpdateAccess(token));
-        $("#modal").close();
-        await check();
-      } catch {
-        error.textContent = "未能保存授权，请核对令牌和本机安全存储后重试。";
-        error.hidden = false;
-      } finally {
-        button.disabled = false;
-      }
-    };
   }
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-update]");
@@ -165,13 +131,6 @@
           break;
         case "later":
           $("#modal").close();
-          break;
-        case "access":
-          access();
-          break;
-        case "clear-access":
-          adopt(await bridge.clearUpdateAccess());
-          toast("已移除单独保存的访问授权");
           break;
       }
     } catch {

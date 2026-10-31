@@ -5,11 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import {
   ReleaseUpdates,
+  AUTOMATIC_CHECK_INTERVAL,
   compareVersions,
   releaseInfo,
 } from "../desktop/updates.mjs";
-import { UpdateAccess } from "../desktop/update-access.mjs";
-const repository = "pansong-law/hengzhang-mac";
+const repository = "pansong-law/hengzhang-open";
 function release(version = "1.0.4", patch = {}) {
   const name = "Hengzhang-" + version + "-universal.dmg";
   return {
@@ -114,30 +114,22 @@ test("new version includes notes and a pinned release page; current and older re
     }
   }
 });
-test("private access retries with a transient credential and never writes it into update preferences", async () => {
-  const credential = "test_readonly_access_0000000000",
-    calls = [],
-    s = fixture(
-      async (url, options) => {
-        calls.push({ url, authorization: options.headers.Authorization });
-        return options.headers.Authorization
-          ? response(release())
-          : response({}, 404);
-      },
-      { tokenProvider: async () => credential },
-    );
+test("update checks never attach private credentials or offer authorization", async () => {
+  const calls = [],
+    s = fixture(async (url, options) => {
+      calls.push({ url, options });
+      return response({}, 401);
+    });
   try {
     const state = await s.updates.check({ manual: true });
-    assert.equal(state.status, "available");
-    assert.equal(calls[0].authorization, undefined);
-    assert.equal(calls[1].authorization, "Bearer " + credential);
-    assert(!JSON.stringify(state).includes(credential));
-    assert(!fs.readFileSync(s.updates.file, "utf8").includes(credential));
-  } finally {
-    s.close();
-  }
+    assert.equal(state.status, "error");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.headers.Authorization, undefined);
+    assert.equal(calls[0].options.credentials, "omit");
+    assert(!/令牌|设置授权|GitHub CLI/.test(state.message));
+  } finally { s.close(); }
 });
-test("private authorization failure and an empty release list are distinct from up to date", async () => {
+test("unavailable public repository and an empty release list are distinct from up to date", async () => {
   for (const exists of [true, false]) {
     const s = fixture(async (url) =>
       url.endsWith("/releases/latest")
@@ -148,7 +140,7 @@ test("private authorization failure and an empty release list are distinct from 
       const state = await s.updates.check({ manual: true });
       assert.equal(
         state.status,
-        exists ? "not_published" : "authorization_required",
+        exists ? "not_published" : "error",
       );
       assert.equal(state.latestVersion, null);
       assert.equal(state.available, false);
@@ -260,27 +252,66 @@ test("concurrent checks share a request and previous version data is retained on
     s.close();
   }
 });
-test("private credential storage requires the OS encryption adapter and keeps plaintext out of files", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hz-access-")),
-    token = "test_readonly_access_0000000000";
+test("automatic checks wait exactly 48 hours across restarts while manual checks bypass the interval", async () => {
+  const interval = 48 * 60 * 60 * 1000;
+  assert.equal(AUTOMATIC_CHECK_INTERVAL, interval);
+  let now = Date.parse("2026-10-31T00:00:00Z"), calls = 0;
+  const fetchImpl = async () => { calls++; return response(release()); };
+  const s = fixture(fetchImpl, { now: () => now });
+  const restart = () => new ReleaseUpdates({
+    currentVersion: "1.0.3", repository, dataDir: s.dir, fetchImpl, now: () => now,
+  });
   try {
-    const unavailable = new UpdateAccess(dir, {
-      isEncryptionAvailable: () => false,
+    assert.equal(s.updates.automaticDelay(), 0);
+    await s.updates.check();
+    assert.equal(calls, 1);
+    assert.equal(s.updates.automaticDelay(), interval);
+    const first = now;
+    assert.equal(JSON.parse(fs.readFileSync(s.updates.file)).lastAutomaticAttempt, first);
+    for (const elapsed of [6 * 3600000, 24 * 3600000, interval - 1]) {
+      now = first + elapsed;
+      await s.updates.check();
+      assert.equal(calls, 1);
+    }
+    const restarted = restart();
+    assert.equal(restarted.automaticDelay(), 1);
+    await restarted.check();
+    assert.equal(calls, 1);
+    await restarted.check({ manual: true });
+    assert.equal(calls, 2);
+    assert.equal(restarted.automaticDelay(), 1);
+    now = first + interval;
+    await restarted.check();
+    assert.equal(calls, 3);
+    assert.equal(restarted.automaticDelay(), interval);
+    restarted.setAutomatic(false);
+    now += interval;
+    assert.equal(restarted.automaticDelay(), null);
+    await restarted.check();
+    assert.equal(calls, 3);
+    await restarted.check({ manual: true });
+    assert.equal(calls, 4);
+    restarted.setAutomatic(true);
+    await restarted.check();
+    assert.equal(calls, 5);
+    assert.equal(restart().automaticDelay(), interval);
+  } finally { s.close(); }
+});
+test("failed automatic attempts also retain the 48 hour interval after restart", async () => {
+  let now = Date.parse("2026-10-31T00:00:00Z"), calls = 0;
+  const fetchImpl = async () => { calls++; throw Error("offline"); };
+  const s = fixture(fetchImpl, { now: () => now });
+  try {
+    assert.equal((await s.updates.check()).status, "error");
+    assert.equal(calls, 1);
+    const restarted = new ReleaseUpdates({
+      currentVersion: "1.0.3", repository, dataDir: s.dir, fetchImpl, now: () => now,
     });
-    assert.throws(() => unavailable.save(token));
-    assert.equal(unavailable.hasStored(), false);
-    const access = new UpdateAccess(dir, {
-      isEncryptionAvailable: () => true,
-      encryptString: (s) => Buffer.from(s).reverse(),
-      decryptString: (b) => Buffer.from(b).reverse().toString(),
-    });
-    access.save(token);
-    assert(!fs.readFileSync(access.file).includes(token));
-    assert.equal(await access.token(), token);
-    assert.equal(fs.statSync(access.file).mode & 0o777, 0o600);
-    access.clear();
-    assert.equal(access.hasStored(), false);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    now += AUTOMATIC_CHECK_INTERVAL - 1;
+    await restarted.check();
+    assert.equal(calls, 1);
+    now++;
+    assert.equal((await restarted.check()).status, "error");
+    assert.equal(calls, 2);
+  } finally { s.close(); }
 });

@@ -1009,17 +1009,8 @@ dialog::backdrop {
   font-size: 12px;
   font-weight: 400;
 }
-.update-access {
-  border-top: 1px solid var(--line);
-  padding-top: 15px;
-  margin-top: 18px;
-}
-.update-access summary {
-  font-size: 12px;
-  cursor: pointer;
-  color: var(--muted);
-  margin-bottom: 10px;
-}
+
+
 .update-result {
   font-size: 13px;
 }

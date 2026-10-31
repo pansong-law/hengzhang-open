@@ -657,11 +657,13 @@ function renderSettings() {
     (window.HzUpdates?.panel() || "") +
     '</section><section class="panel"><h2>工作台格言</h2><form id="motto-form"><label>自定义格言<input name="dashboard_motto" maxlength="60" value="' +
     esc(data.preferences.dashboard_motto) +
-    '"></label><p class="hint">最多 60 字，留空保存可恢复默认格言。</p><p class="form-error" role="alert" hidden></p><div class="page-actions"><button type="button" data-action="reset-motto">恢复默认</button><button class="primary" type="submit">保存格言</button></div></form></section><section class="panel"><h2>数据备份</h2><div class="setting-row"><div><strong>导出完整备份</strong><p>包含全部案件、收款流水、进展和提醒。可保存到移动硬盘或其他设备。</p></div><button class="primary" data-action="backup-export">导出备份</button></div><div class="setting-row"><div><strong>从备份文件恢复</strong><p>先预览文件内容，再确认替换当前数据；替换前会自动保留一份备份。</p></div><button data-action="backup-import">选择备份文件</button></div><div class="setting-row"><div><strong>自动备份</strong><p>启动时及使用中定期保留备份；导入、删除、恢复前另做备份。保留最近 30 份，均位于本机。</p></div>' +
-    badge("已开启", "good") +
-    '</div></section><section class="panel"><div class="panel-head"><h2>最近的本机备份</h2><span class="small muted">' +
+    '"></label><p class="hint">最多 60 字，留空保存可恢复默认格言。</p><p class="form-error" role="alert" hidden></p><div class="page-actions"><button type="button" data-action="reset-motto">恢复默认</button><button class="primary" type="submit">保存格言</button></div></form></section><section class="panel"><h2>数据备份</h2><div class="setting-row"><div><strong>导出完整备份</strong><p>包含全部案件、收款流水、进展和提醒。可保存到移动硬盘或其他设备。</p></div><button class="primary" data-action="backup-export">导出备份</button></div><div class="setting-row"><div><strong>从备份文件恢复</strong><p>先预览文件内容，再确认替换当前数据；替换前会自动保留一份备份。</p></div><button data-action="backup-import">选择备份文件</button></div><div class="setting-row"><div><strong>自动备份</strong><p>每 48 小时自动备份一次，重启不会重复备份；应用退出期间不备份。可随时点击“导出备份”手动备份，恢复前另存保护快照。本机备份合计保留最近 5 份。</p></div>' +
+    badge(backupInfo?.automatic_error ? "备份异常" : "已开启", backupInfo?.automatic_error ? "warn" : "good") +
+    '</div>' +
+    (backupInfo?.automatic_error ? '<p class="form-error" role="alert">' + esc(backupInfo.automatic_error) + "</p>" : "") +
+    '</section><section class="panel"><div class="panel-head"><h2>最近的本机备份</h2><span class="small muted">' +
     (backupInfo?.backups.length || 0) +
-    " / 30 份</span></div>" +
+    " / " + (backupInfo?.retention || 5) + " 份</span></div>" +
     (backupInfo?.backups.length
       ? '<div class="table-wrap backup-table"><table><thead><tr><th>备份时间</th><th>内容</th><th>案件数</th><th>操作</th></tr></thead><tbody>' +
         backupInfo.backups
@@ -781,7 +783,7 @@ async function editor(id = null, renew = false) {
     '<div class="form-section full"><h3>律师费</h3></div>' +
     input(
       "contract_amount",
-      "签约律师费（元，根据风险费成就情况手动更新）",
+      "签约律师费（元，根据风险费情况手动更新）",
       c.contract_amount,
       "number",
     ) +
@@ -1126,14 +1128,14 @@ async function deleteCase(id) {
   const c = findCase(id);
   form(
     "删除案件",
-    '<div class="notice-box">将删除该案件及其收款流水、进展和提醒。系统会先生成一份完整备份，需要时可整体恢复。</div><p>确认删除「' +
+    '<div class="notice-box">将删除该案件及其收款流水、进展和提醒。如需保留当前数据，请先在“设置与备份”手动导出完整备份。</div><p>确认删除「' +
       esc(labelCase(c)) +
       "」？</p>",
     async () => {
       await api("cases/" + id, "DELETE", { revision: c.revision });
       closeModal();
       await refresh();
-      notice("案件已删除，删除前备份已保留");
+      notice("案件已删除");
     },
     "确认删除",
   );
@@ -1141,7 +1143,7 @@ async function deleteCase(id) {
 async function deleteCollection(id, receipt) {
   form(
     "删除收款流水",
-    "<p>删除后会相应减少该案件的累计已收款。删除前会自动备份。</p>",
+    "<p>删除后会相应减少该案件的累计已收款。如需保留当前数据，请先手动导出完整备份。</p>",
     async () => {
       await api("cases/" + id + "/collections/" + receipt, "DELETE", {});
       closeModal();
@@ -1189,7 +1191,7 @@ async function importDialog() {
   const specs = await getTemplates();
   openModal(
     "导入 Excel 台账",
-    '<p class="hint">选择案件类型，下载模板填写后导入。相同内部案号会合并更新非空字段；没有内部案号的记录会新建。</p><div class="notice-box">先预览再导入。导入前会自动备份。Excel 导出表也可重新导入；仅读取第一张工作表。</div>' +
+    '<p class="hint">选择案件类型，下载模板填写后导入。相同内部案号会合并更新非空字段；没有内部案号的记录会新建。</p><div class="notice-box">先预览再导入。需要保留导入前的数据时，可先在“设置与备份”手动导出备份。Excel 导出表也可重新导入；仅读取第一张工作表。金额计算方式为“自动”时忽略金额列并恢复自动计算；要登记固定金额，请将计算方式改为“手填”并填写金额。</div>' +
       Object.entries(specs)
         .map(
           ([track, spec]) =>
@@ -1287,7 +1289,7 @@ $("#import-file").onchange = async (e) => {
         preview.merged +
         "</strong>合并行数</div><div><strong>" +
         preview.incomplete +
-        '</strong>内部案号待补充</div></div><p class="hint">合并以内部案号为准，空白字段保留原值。以下展示前 20 个发生变化的案件。</p><div class="table-wrap"><table><thead><tr><th>内部案号</th><th>类型</th><th>客户</th><th>签约律师费</th></tr></thead><tbody>' +
+        '</strong>内部案号待补充</div></div><p class="hint">合并以内部案号为准，空白字段保留原值；金额计算方式为“自动”时恢复自动计算。以下展示前 20 个发生变化的案件。</p><div class="table-wrap"><table><thead><tr><th>内部案号</th><th>类型</th><th>客户</th><th>签约律师费</th></tr></thead><tbody>' +
         preview.records
           .slice(0, 20)
           .map(

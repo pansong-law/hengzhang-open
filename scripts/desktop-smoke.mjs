@@ -263,6 +263,45 @@ try {
   assert.equal(exported.length, 1);
   assert.equal(exported[0]["内部案号"], "MAC-001");
   assert.equal(exported[0]["开票未付金额"], 3250.05);
+  assert.equal(exported[0]["开票未付金额计算方式"], "手填");
+  const macCase = (await request(page, "workspace")).cases.find((c) => c.case_no === "MAC-001");
+  const reimportLedger = async (filename) => {
+    // Import intentionally reads only the first sheet. Put the exported data
+    // sheet first, preserving its cells and the new calculation-mode columns.
+    const reordered = await page.evaluate((bytes) => {
+      const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
+      wb.SheetNames.sort((a, b) =>
+        XLSX.utils.sheet_to_json(wb.Sheets[b]).length - XLSX.utils.sheet_to_json(wb.Sheets[a]).length);
+      return Array.from(new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" })));
+    }, Array.from(fs.readFileSync(filename)));
+    const inputPath = path.join(workspace, "roundtrip.xlsx");
+    fs.writeFileSync(inputPath, Buffer.from(reordered));
+    await page.getByRole("button", { name: "导入台账", exact: true }).click();
+    const selection = page.waitForEvent("filechooser");
+    await page.locator("[data-action=choose-import][data-track=litigation]").click();
+    await (await selection).setFiles(inputPath);
+    await page.getByRole("button", { name: "确认导入", exact: true }).click();
+    await expect(page.locator("#modal")).not.toBeVisible();
+    assert.equal((await request(page, "workspace")).cases.length, 4);
+    return (await request(page, "cases/" + macCase.id)).case;
+  };
+  assert.equal((await reimportLedger(exportPath)).invoiced_unpaid, 3250.05);
+  assert.equal((await request(page, "cases/" + macCase.id, "PUT", { invoiced_unpaid: "" })).status, 200);
+  await page.locator("#filter-q").fill("MAC-001");
+  before = await downloadCount();
+  await page.getByRole("button", { name: "导出当前筛选", exact: true }).click();
+  const automaticExport = await waitDownload(before);
+  const automaticCase = await reimportLedger(automaticExport);
+  assert.equal(automaticCase.invoiced_unpaid, null);
+  assert.equal((await request(page, "cases/" + macCase.id + "/collections", "POST", {
+    amount: 50, date: "2026-10-31",
+  })).status, 200);
+  const afterReceipt = (await request(page, "cases/" + macCase.id)).case;
+  assert.equal(afterReceipt.fee_summary.invoiced_unpaid,
+    Math.max(0, Math.round((automaticCase.fee_summary.invoiced_unpaid - 50) * 100) / 100));
+  assert.equal((await request(page,
+    "cases/" + macCase.id + "/collections/" + afterReceipt.collections.at(-1).id, "DELETE", {})).status, 200);
+  assert.equal((await request(page, "cases/" + macCase.id, "PUT", { invoiced_unpaid: 3250.05 })).status, 200);
   await page.getByRole("button", { name: "重置", exact: true }).click();
   await page.screenshot({
     path: path.join(workspace, "案件台账.png"),
@@ -275,6 +314,19 @@ try {
     fullPage: true,
   });
   await page.getByRole("button", { name: "设置与备份", exact: true }).click();
+  await expect(page.locator("#software-updates")).toContainText("每 48 小时自动检查新版本");
+  await expect(page.locator("body")).toContainText("每 48 小时自动备份一次");
+  await expect(page.locator("body")).toContainText("本机备份合计保留最近 5 份");
+  const backupPolicy = await request(page, "backups");
+  assert.equal(backupPolicy.retention, 5);
+  assert.equal(backupPolicy.automatic_interval_hours, 48);
+  assert(backupPolicy.backups.length <= 5);
+  await expect(page.getByText("私有版本访问", { exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-update=access], [data-update=clear-access]")).toHaveCount(0);
+  assert.deepEqual(await page.evaluate(() => ({
+    setAccess: typeof window.hengzhang.setUpdateAccess,
+    clearAccess: typeof window.hengzhang.clearUpdateAccess,
+  })), { setAccess: "undefined", clearAccess: "undefined" });
   await page.locator("[name=dashboard_motto]").fill("以法为业，守护公正。");
   await page.getByRole("button", { name: "保存格言", exact: true }).click();
   await page.getByRole("button", { name: "工作台", exact: true }).click();
@@ -382,7 +434,7 @@ try {
               state: "uploaded",
               size: 100,
               browser_download_url:
-                "https://github.com/pansong-law/hengzhang-mac/releases/download/v9.9.9/Hengzhang-9.9.9-universal.dmg",
+                "https://github.com/pansong-law/hengzhang-open/releases/download/v9.9.9/Hengzhang-9.9.9-universal.dmg",
             },
           ],
         }),
@@ -400,7 +452,7 @@ try {
   await expect
     .poll(() => application.evaluate(() => globalThis.updateDownloadCalls))
     .toEqual([
-      "https://github.com/pansong-law/hengzhang-mac/releases/tag/v9.9.9",
+      "https://github.com/pansong-law/hengzhang-open/releases/tag/v9.9.9",
     ]);
   await page.locator("[data-update=later]").click();
   await expect(page.locator("#update-banner")).toBeVisible();
@@ -450,7 +502,7 @@ try {
     updateRequests.every(
       (r) =>
         r.url.startsWith(
-          "https://api.github.com/repos/pansong-law/hengzhang-mac/",
+          "https://api.github.com/repos/pansong-law/hengzhang-open/",
         ) &&
         r.credentials === "omit" &&
         !r.hasBody,

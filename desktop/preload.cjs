@@ -10,10 +10,6 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("hengzhang:updates:automatic", value),
     dismissUpdate: () => ipcRenderer.invoke("hengzhang:updates:dismiss"),
     openUpdateDownload: () => ipcRenderer.invoke("hengzhang:updates:download"),
-    setUpdateAccess: (token) =>
-      ipcRenderer.invoke("hengzhang:updates:access", token),
-    clearUpdateAccess: () =>
-      ipcRenderer.invoke("hengzhang:updates:clear-access"),
     onUpdateState: (callback) => {
       const listener = (_event, state) => callback(state);
       ipcRenderer.on("hengzhang:update-state", listener);

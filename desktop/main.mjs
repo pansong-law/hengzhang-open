@@ -6,7 +6,6 @@ import {
   ipcMain,
   shell,
   net,
-  safeStorage,
 } from "electron";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,7 +13,6 @@ import { fileURLToPath } from "node:url";
 import { createLocalApp } from "../server.js";
 import { readBackup } from "../lib/store.js";
 import { ReleaseUpdates } from "./updates.mjs";
-import { UpdateAccess } from "./update-access.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const dataDir =
   process.env.HZ_DATA_DIR ||
@@ -23,11 +21,21 @@ app.setPath("userData", dataDir);
 app.setName("衡账");
 let backend,
   updates,
-  updateAccess,
   updateInterval,
   origin,
   window,
   quitting = false;
+function scheduleAutomaticCheck() {
+  clearTimeout(updateInterval);
+  const delay = updates.automaticDelay();
+  if (quitting || delay === null) return;
+  updateInterval = setTimeout(async () => {
+    if (quitting) return;
+    await updates.check();
+    scheduleAutomaticCheck();
+  }, delay);
+  updateInterval.unref();
+}
 const primary = app.requestSingleInstanceLock();
 if (!primary) app.quit();
 else {
@@ -180,7 +188,6 @@ else {
       }
       if (backend) {
         origin = await backend.start();
-        updateAccess = new UpdateAccess(dataDir, safeStorage);
         const source = JSON.parse(
           fs.readFileSync(path.join(HERE, "update-source.json"), "utf8"),
         );
@@ -189,13 +196,9 @@ else {
           repository: source.repository,
           dataDir,
           fetchImpl: (url, options) => net.fetch(url, options),
-          tokenProvider: () => updateAccess.token(),
           onChange: (state) => {
             if (window && !window.isDestroyed())
-              window.webContents.send("hengzhang:update-state", {
-                ...state,
-                storedAccess: updateAccess.hasStored(),
-              });
+              window.webContents.send("hengzhang:update-state", state);
           },
         });
         const trusted = (event) => {
@@ -205,10 +208,7 @@ else {
           )
             throw Error("无效窗口");
         };
-        const updateState = () => ({
-          ...updates.snapshot(),
-          storedAccess: updateAccess.hasStored(),
-        });
+        const updateState = () => updates.snapshot();
         ipcMain.handle("hengzhang:updates:status", (event) => {
           trusted(event);
           return updateState();
@@ -218,10 +218,11 @@ else {
           await updates.check({ manual: true });
           return updateState();
         });
-        ipcMain.handle("hengzhang:updates:automatic", (event, value) => {
+        ipcMain.handle("hengzhang:updates:automatic", async (event, value) => {
           trusted(event);
           updates.setAutomatic(value);
-          if (value) void updates.check();
+          if (value) await updates.check();
+          scheduleAutomaticCheck();
           return updateState();
         });
         ipcMain.handle("hengzhang:updates:dismiss", (event) => {
@@ -234,21 +235,6 @@ else {
           await shell.openExternal(updates.downloadPage());
           return true;
         });
-        ipcMain.handle("hengzhang:updates:access", (event, token) => {
-          trusted(event);
-          updateAccess.save(token);
-          return updateState();
-        });
-        ipcMain.handle("hengzhang:updates:clear-access", (event) => {
-          trusted(event);
-          updateAccess.clear();
-          return updateState();
-        });
-        updateInterval = setInterval(
-          () => void updates.check(),
-          6 * 60 * 60 * 1000,
-        );
-        updateInterval.unref();
         ipcMain.handle("hengzhang:open-homepage", async (event) => {
           if (
             event.sender !== window?.webContents ||
@@ -323,8 +309,10 @@ else {
           );
           window.once("ready-to-show", () => window.show());
           window.webContents.once("did-finish-load", () => {
-            const timer = setTimeout(() => {
-              if (!quitting) void updates.check();
+            const timer = setTimeout(async () => {
+              if (quitting) return;
+              await updates.check();
+              scheduleAutomaticCheck();
             }, 2500);
             timer.unref();
           });
@@ -347,7 +335,7 @@ else {
       if (backend && !quitting) {
         event.preventDefault();
         quitting = true;
-        clearInterval(updateInterval);
+        clearTimeout(updateInterval);
         updates?.stop();
         backend.close().finally(() => app.quit());
       }

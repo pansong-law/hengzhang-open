@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { extractFile, listPackage } from "@electron/asar";
+import { SOURCE_PATHS, copySourceSnapshot } from "./release-snapshot.mjs";
 import { validRepository, versionParts } from "../desktop/updates.mjs";
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(
@@ -33,19 +33,11 @@ const app = path.join(root, "dist", "mac-universal", "衡账.app"),
   archive = path.join(app, "Contents/Resources/app.asar");
 if (!fs.existsSync(dmg) || !fs.existsSync(archive))
   throw Error("请先构建 Mac 通用版");
-if (JSON.parse(extractFile(archive, "package.json")).version !== pkg.version)
-  throw Error("安装包版本与源码不一致");
-for (const name of listPackage(archive)) {
-  const relative = name.slice(1),
-    file = path.join(root, relative);
-  if (
-    relative === "package.json" ||
-    !fs.existsSync(file) ||
-    !fs.statSync(file).isFile()
-  )
-    continue;
-  if (!extractFile(archive, relative).equals(fs.readFileSync(file)))
-    throw Error("请重新打包：" + relative);
+const preview = fs.mkdtempSync(path.join(os.tmpdir(), "hengzhang-source-preview-"));
+try {
+  copySourceSnapshot(root, preview, archive);
+} finally {
+  fs.rmSync(preview, { recursive: true, force: true });
 }
 run("codesign", ["--verify", "--deep", "--strict", app]);
 const remote = JSON.parse(
@@ -53,20 +45,6 @@ const remote = JSON.parse(
 );
 if (remote.visibility !== "PRIVATE" && !args.includes("--allow-public"))
   throw Error("仓库不是私有状态，停止发布；公开后需显式指定 --allow-public");
-const sources = [
-  ".gitignore",
-  "package.json",
-  "package-lock.json",
-  "README.md",
-  "LICENSE",
-  "LICENSE.md",
-  "衡账开源介绍.md",
-  "启动衡账.command",
-  "desktop",
-  "lib",
-  "public",
-  "scripts",
-];
 console.log(
   JSON.stringify(
     {
@@ -74,7 +52,7 @@ console.log(
       visibility: remote.visibility,
       version: pkg.version,
       installer: path.basename(dmg),
-      source_paths: sources,
+      source_paths: SOURCE_PATHS,
       publish,
     },
     null,
@@ -118,14 +96,7 @@ try {
     if (!file.startsWith(checkout + path.sep)) throw Error("仓库路径异常");
     fs.rmSync(file, { force: true, recursive: true });
   }
-  for (const name of sources) {
-    const from = path.join(root, name);
-    if (fs.existsSync(from))
-      fs.cpSync(from, path.join(checkout, name), {
-        recursive: true,
-        filter: (file) => path.basename(file) !== ".DS_Store",
-      });
-  }
+  copySourceSnapshot(root, checkout, archive);
   run("git", ["add", "-A"], { cwd: checkout });
   let changed = true;
   try {

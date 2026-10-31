@@ -1,7 +1,8 @@
 {
   "name": "hengzhang-local",
-  "version": "1.0.5",
+  "version": "1.0.8",
   "private": true,
+  "license": "SEE LICENSE IN LICENSE",
   "description": "衡账 · 个人案件与律师费管理（Mac 本地版）",
   "type": "module",
   "engines": {
@@ -10,7 +11,7 @@
   "scripts": {
     "start": "electron .",
     "dev:server": "node server.js",
-    "test": "node --test scripts/local.test.mjs scripts/updates.test.mjs",
+    "test": "node --test scripts/local.test.mjs scripts/updates.test.mjs scripts/release-snapshot.test.mjs",
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "pack:mac": "electron-builder --mac --dir --universal",
     "dist:mac": "electron-builder --mac dmg --universal",
@@ -40,6 +41,7 @@
       "server.js",
       "lib/**/*.js",
       "public/**/*",
+      "LICENSE",
       "package.json"
     ],
     "asar": true,
@@ -60,6 +62,6 @@
   "homepage": "https://aifalv.vip/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pansong-law/hengzhang-mac.git"
+    "url": "git+https://github.com/pansong-law/hengzhang-open.git"
   }
 }

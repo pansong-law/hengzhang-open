@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 const MAX_RESPONSE = 1024 * 1024;
+export const AUTOMATIC_CHECK_INTERVAL = 48 * 60 * 60 * 1000;
 export function versionParts(version) {
   const m = String(version).match(
     /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/,
@@ -61,7 +62,6 @@ export class ReleaseUpdates {
     repository,
     dataDir,
     fetchImpl = fetch,
-    tokenProvider = async () => null,
     onChange = () => {},
     now = () => Date.now(),
     timeoutMs = 12000,
@@ -72,7 +72,6 @@ export class ReleaseUpdates {
       currentVersion,
       repository,
       fetchImpl,
-      tokenProvider,
       onChange,
       now,
       timeoutMs,
@@ -82,7 +81,7 @@ export class ReleaseUpdates {
     this.prefs = {
       automatic: true,
       dismissedVersion: null,
-      lastAutomaticAttempt: 0,
+      lastAutomaticAttempt: null,
       lastCheckedAt: null,
     };
     try {
@@ -90,12 +89,11 @@ export class ReleaseUpdates {
       if (typeof p.automatic === "boolean") this.prefs.automatic = p.automatic;
       if (typeof p.dismissedVersion === "string")
         this.prefs.dismissedVersion = p.dismissedVersion;
-      if (Number.isFinite(p.lastAutomaticAttempt))
+      if (Number.isFinite(p.lastAutomaticAttempt) && p.lastAutomaticAttempt >= 0)
         this.prefs.lastAutomaticAttempt = p.lastAutomaticAttempt;
       if (typeof p.lastCheckedAt === "string")
         this.prefs.lastCheckedAt = p.lastCheckedAt;
     } catch {}
-    this.lastAutomaticAttempt = null;
     this.state = {
       status: "idle",
       currentVersion,
@@ -139,12 +137,11 @@ export class ReleaseUpdates {
     this.save();
     return this.emit({});
   }
-  async get(url, token, signal) {
+  async get(url, signal) {
     const headers = {
       Accept: "application/vnd.github+json",
       "User-Agent": "Hengzhang/" + this.currentVersion,
     };
-    if (token) headers.Authorization = "Bearer " + token;
     const r = await this.fetchImpl(url, {
       headers,
       signal,
@@ -192,18 +189,31 @@ export class ReleaseUpdates {
   }
   async check({ manual = false } = {}) {
     if (this.pending) return this.pending;
-    if (
-      !manual &&
-      (!this.prefs.automatic ||
-        (this.lastAutomaticAttempt !== null &&
-          this.now() - this.lastAutomaticAttempt < 6 * 60 * 60 * 1000))
-    )
+    if (!manual && (!this.prefs.automatic || this.automaticDelay() > 0))
       return this.snapshot();
-    if (!manual) this.lastAutomaticAttempt = this.now();
+    if (!manual) {
+      this.prefs.lastAutomaticAttempt = this.now();
+      try {
+        this.save();
+      } catch {
+        return this.emit({
+          status: "error",
+          message: "未能保存自动检查时间，请稍后手动检查更新。",
+        });
+      }
+    }
     this.pending = this.perform().finally(() => {
       this.pending = null;
     });
     return this.pending;
+  }
+  automaticDelay() {
+    if (!this.prefs.automatic) return null;
+    if (this.prefs.lastAutomaticAttempt === null) return 0;
+    return Math.max(0, Math.min(
+      AUTOMATIC_CHECK_INTERVAL,
+      this.prefs.lastAutomaticAttempt + AUTOMATIC_CHECK_INTERVAL - this.now(),
+    ));
   }
   async perform() {
     this.emit({ status: "checking", message: "正在检查新版本…" });
@@ -212,36 +222,24 @@ export class ReleaseUpdates {
     this.controller = controller;
     try {
       const root = "https://api.github.com/repos/" + this.repository;
-      let token = null,
-        result = await this.get(
-          root + "/releases/latest",
-          null,
-          controller.signal,
-        );
-      if ([401, 403, 404].includes(result.status)) {
-        token = await this.tokenProvider();
-        if (token)
-          result = await this.get(
-            root + "/releases/latest",
-            token,
-            controller.signal,
-          );
-        if (result.status === 404) {
-          const repo = await this.get(root, token, controller.signal);
-          if (repo.status === 200)
-            return this.emit({
-              status: "not_published",
-              message: "尚未发布可下载的新版本",
-              available: false,
-              lastCheckedAt: new Date(this.now()).toISOString(),
-            });
+      const result = await this.get(root + "/releases/latest", controller.signal);
+      if (result.status === 404) {
+        const repo = await this.get(root, controller.signal);
+        if (repo.status === 200) {
+          this.prefs.lastCheckedAt = new Date(this.now()).toISOString();
+          this.save();
+          return this.emit({
+            status: "not_published",
+            message: "尚未发布可下载的新版本",
+            available: false,
+            lastCheckedAt: this.prefs.lastCheckedAt,
+          });
         }
       }
       if ([401, 403, 404].includes(result.status))
         return this.emit({
-          status: "authorization_required",
-          message:
-            "私有测试阶段需要仓库访问权限。请设置授权，或使用已登录的 GitHub CLI。",
+          status: "error",
+          message: "暂时无法读取公开的版本信息，请稍后重试。",
         });
       const info = releaseInfo(
         result.value,
