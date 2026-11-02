@@ -31,16 +31,12 @@ import {
 import { LITIGATION_STAGES } from "./lib/litigation-stage.js";
 import { planCaseImport } from "./lib/case-import.js";
 import { advisoryRenewalDraft, renewalPeriod } from "./lib/advisory-renewal.js";
+import { mottoPreferences } from "./lib/daily-motto.js";
 const ROOT = path.dirname(fileURLToPath(import.meta.url)),
   PUBLIC = path.join(ROOT, "public");
 const APP_VERSION = JSON.parse(
   fs.readFileSync(path.join(ROOT, "package.json"), "utf8"),
 ).version;
-const DEFAULT_MOTTO = "热爱法律，笃行正义。";
-const preferencesFor = (db) => ({
-  dashboard_motto: db.meta.dashboard_motto || DEFAULT_MOTTO,
-  default_motto: DEFAULT_MOTTO,
-});
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -179,7 +175,7 @@ export function createLocalApp({
             .sort(compareLedgerCases);
           return json(res, 200, {
             version: APP_VERSION,
-            preferences: preferencesFor(db),
+            preferences: mottoPreferences(db),
             cases,
             summary: summary(cases),
             tracks: TRACKS,
@@ -187,6 +183,8 @@ export function createLocalApp({
             updated_at: timestamp(),
           });
         }
+        if (p === "/api/preferences" && method === "GET")
+          return json(res, 200, { preferences: mottoPreferences(db) });
         if (p === "/api/preferences" && method === "PUT") {
           const input = await body(req);
           if (
@@ -201,7 +199,7 @@ export function createLocalApp({
           });
           return json(res, 200, {
             ok: true,
-            preferences: preferencesFor(store.db),
+            preferences: mottoPreferences(store.db),
           });
         }
         if (p === "/api/cases" && method === "POST") {

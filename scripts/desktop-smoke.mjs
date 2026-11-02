@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { dailyMotto } from "../lib/daily-motto.js";
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "hengzhang-desktop-")),
   dataDir = path.join(workspace, "data"),
   downloads = path.join(workspace, "downloads");
@@ -17,7 +18,7 @@ const APP_VERSION = JSON.parse(
 ).version;
 let application;
 const executable = process.env.HZ_APP_EXECUTABLE;
-async function launch(expectedMotto = "热爱法律，笃行正义。") {
+async function launch(expectedMotto = dailyMotto()) {
   application = await electron.launch({
     ...(executable
       ? { executablePath: executable, args: [] }
@@ -323,6 +324,9 @@ try {
   assert(backupPolicy.backups.length <= 5);
   await expect(page.getByText("私有版本访问", { exact: true })).toHaveCount(0);
   await expect(page.locator("[data-update=access], [data-update=clear-access]")).toHaveCount(0);
+  await expect(page.locator("[name=dashboard_motto]")).toHaveValue("");
+  await expect(page.locator("[name=dashboard_motto]")).toHaveAttribute("placeholder", dailyMotto());
+  assert.equal((await request(page, "workspace")).preferences.custom_motto, "");
   assert.deepEqual(await page.evaluate(() => ({
     setAccess: typeof window.hengzhang.setUpdateAccess,
     clearAccess: typeof window.hengzhang.clearUpdateAccess,
@@ -403,7 +407,7 @@ try {
   await page.getByRole("button", { name: "恢复默认", exact: true }).click();
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "热爱法律，笃行正义。", exact: true }),
+    page.getByRole("heading", { name: dailyMotto(), exact: true }),
   ).toBeVisible();
   // Exercise native IPC and update rendering without creating a fake GitHub release.
   await page.getByRole("button", { name: "设置与备份", exact: true }).click();

@@ -9,6 +9,90 @@ import { LocalStore, backupDocument, readBackup, BACKUP_INTERVAL, BACKUP_RETENTI
 import { prepareCase, caseFinance } from "../lib/case-model.js";
 import { advisoryRenewalDraft } from "../lib/advisory-renewal.js";
 import { CASE_LEDGER_FIELDS } from "../lib/case-ledger-fields.js";
+import { dailyMotto } from "../lib/daily-motto.js";
+
+test("offline daily motto follows local calendar days and matches the public version", () => {
+  assert.equal(dailyMotto(new Date(2026, 10, 2)), "日子不必匆忙，热爱自有回声。");
+  assert.equal(dailyMotto(new Date(2026, 10, 2, 23, 59)), dailyMotto(new Date(2026, 10, 2, 0, 1)));
+  assert.notEqual(dailyMotto(new Date(2026, 10, 3)), dailyMotto(new Date(2026, 10, 2)));
+  assert.notEqual(dailyMotto(new Date(2027, 0, 1)), dailyMotto(new Date(2026, 11, 31)));
+});
+
+test("daily defaults never become user settings; saved and restored custom mottos win", async (t) => {
+  const start = new Date(2026, 10, 2, 23, 59).getTime();
+  t.mock.timers.enable({ apis: ["Date"], now: start });
+  const s = await fixture();
+  try {
+    const initial = (await s.request("workspace")).preferences;
+    assert.equal(initial.dashboard_motto, "日子不必匆忙，热爱自有回声。");
+    assert.equal(initial.custom_motto, "");
+    const original = fs.readFileSync(s.app.store.file, "utf8");
+    t.mock.timers.setTime(new Date(2026, 10, 3, 0, 1).getTime());
+    const next = (await s.request("preferences")).preferences;
+    assert.notEqual(next.default_motto, initial.default_motto);
+    assert.equal(next.motto_date, "2026-11-03");
+    assert.equal(fs.readFileSync(s.app.store.file, "utf8"), original);
+    for (const custom of ["以法为业，守护公正。", "热爱法律，笃行正义。"]) {
+      const saved = await s.request("preferences", "PUT", { dashboard_motto: custom });
+      assert.equal(saved.preferences.dashboard_motto, custom);
+      assert.equal(saved.preferences.custom_motto, custom);
+      t.mock.timers.setTime(Date.now() + 86400000);
+      assert.equal((await s.request("preferences")).preferences.dashboard_motto, custom);
+      const backup = backupDocument(s.app.store.db);
+      await s.restart();
+      assert.equal((await s.request("workspace")).preferences.dashboard_motto, custom);
+      await s.request("preferences", "PUT", { dashboard_motto: "" });
+      assert.equal(s.app.store.db.meta.dashboard_motto, undefined);
+      s.app.store.restore(backup);
+      assert.equal((await s.request("preferences")).preferences.custom_motto, custom);
+    }
+    const cleared = await s.request("preferences", "PUT", { dashboard_motto: "   " });
+    assert.equal(cleared.preferences.dashboard_motto, dailyMotto());
+    assert.equal(cleared.preferences.custom_motto, "");
+    assert.equal(s.app.store.db.meta.dashboard_motto, undefined);
+  } finally {
+    t.mock.timers.reset();
+    await s.close();
+  }
+});
+
+test("midnight refresh keeps forms intact and discards a reply older than a custom save", async () => {
+  const source = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  const entry = source.slice(source.indexOf("let mottoFlight = null;"), source.indexOf("async function refresh()"));
+  const heading = { textContent: "昨天" }, date = { textContent: "" };
+  let finish, calls = 0;
+  const context = vm.createContext({
+    data: { preferences: { motto_date: "2026-11-02" } }, view: "dash",
+    document: { visibilityState: "visible" }, today: () => "2026-11-03",
+    $: (selector) => selector.endsWith("h1") ? heading : date,
+    api: () => { calls++; return new Promise((resolve) => { finish = resolve; }); },
+  });
+  vm.runInContext(entry, context);
+  const pending = context.refreshDailyMotto();
+  const duplicate = context.refreshDailyMotto();
+  assert.equal(calls, 1);
+  context.data.preferences = { dashboard_motto: "刚保存的内容", motto_date: "2026-11-03" };
+  finish({ preferences: { dashboard_motto: "旧响应", motto_date: "2026-11-03" } });
+  await Promise.all([pending, duplicate]);
+  assert.equal(context.data.preferences.dashboard_motto, "刚保存的内容");
+  assert.equal(heading.textContent, "昨天");
+  context.data.preferences.motto_date = "2026-11-02";
+  const updated = context.refreshDailyMotto();
+  finish({ preferences: { dashboard_motto: "今天", motto_date: "2026-11-03" } });
+  await updated;
+  assert.equal(heading.textContent, "今天");
+  assert.equal(date.textContent, "2026 / 11 / 03");
+  context.view = "settings";
+  context.data.preferences.motto_date = "2026-11-02";
+  let formTouches = 0;
+  context.$ = () => { formTouches++; return null; };
+  const inSettings = context.refreshDailyMotto();
+  finish({ preferences: { dashboard_motto: "设置中的新一天", motto_date: "2026-11-03" } });
+  await inSettings;
+  assert.equal(context.data.preferences.dashboard_motto, "设置中的新一天");
+  assert.equal(heading.textContent, "今天");
+  assert.equal(formTouches, 0);
+});
 
 for (const operation of ["receipt", "restore"])
   for (const failure of ["open", "fsync", "close"])

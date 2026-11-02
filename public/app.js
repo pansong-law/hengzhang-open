@@ -237,6 +237,33 @@ function expiryCases() {
     )
     .sort((a, b) => periodEnd(a).localeCompare(periodEnd(b)));
 }
+let mottoFlight = null;
+async function refreshDailyMotto() {
+  if (!data || document.visibilityState === "hidden" ||
+      data.preferences.motto_date === today()) return;
+  if (mottoFlight) return mottoFlight;
+  const previous = data.preferences;
+  mottoFlight = (async () => {
+    try {
+      const result = await api("preferences");
+      // A save, restore or full refresh may have supplied newer preferences.
+      if (data.preferences !== previous) return;
+      data.preferences = result.preferences;
+      if (view === "dash") {
+        const heading = $(".welcome-strip h1"), date = $(".welcome-strip .eyebrow");
+        if (heading && date) {
+          heading.textContent = data.preferences.dashboard_motto;
+          date.textContent = today().replaceAll("-", " / ");
+        }
+      }
+    } catch {
+      // Keep the current text and retry locally; never interrupt an open form.
+    } finally {
+      mottoFlight = null;
+    }
+  })();
+  return mottoFlight;
+}
 async function refresh() {
   data = await api("workspace");
   $("#data-updated").textContent =
@@ -257,6 +284,7 @@ async function navigate(next) {
     );
   $("#crumb").textContent = titles[view];
   if (view === "settings") backupInfo = await api("backups");
+  await refreshDailyMotto();
   render();
 }
 function render() {
@@ -656,8 +684,9 @@ function renderSettings() {
     '<div class="page-heading"><div><h1>设置与备份</h1><p>保存一份完整备份，换电脑或需要时可以恢复。</p></div></div><section id="software-updates" class="panel">' +
     (window.HzUpdates?.panel() || "") +
     '</section><section class="panel"><h2>工作台格言</h2><form id="motto-form"><label>自定义格言<input name="dashboard_motto" maxlength="60" value="' +
-    esc(data.preferences.dashboard_motto) +
-    '"></label><p class="hint">最多 60 字，留空保存可恢复默认格言。</p><p class="form-error" role="alert" hidden></p><div class="page-actions"><button type="button" data-action="reset-motto">恢复默认</button><button class="primary" type="submit">保存格言</button></div></form></section><section class="panel"><h2>数据备份</h2><div class="setting-row"><div><strong>导出完整备份</strong><p>包含全部案件、收款流水、进展和提醒。可保存到移动硬盘或其他设备。</p></div><button class="primary" data-action="backup-export">导出备份</button></div><div class="setting-row"><div><strong>从备份文件恢复</strong><p>先预览文件内容，再确认替换当前数据；替换前会自动保留一份备份。</p></div><button data-action="backup-import">选择备份文件</button></div><div class="setting-row"><div><strong>自动备份</strong><p>每 48 小时自动备份一次，重启不会重复备份；应用退出期间不备份。可随时点击“导出备份”手动备份，恢复前另存保护快照。本机备份合计保留最近 5 份。</p></div>' +
+    esc(data.preferences.custom_motto) +
+    '" placeholder="' + esc(data.preferences.default_motto) +
+    '"></label><p class="hint">最多 60 字，自定义内容优先。留空保存或恢复默认后，每天自动显示一句内置金句，无需联网。</p><p class="form-error" role="alert" hidden></p><div class="page-actions"><button type="button" data-action="reset-motto">恢复默认</button><button class="primary" type="submit">保存格言</button></div></form></section><section class="panel"><h2>数据备份</h2><div class="setting-row"><div><strong>导出完整备份</strong><p>包含全部案件、收款流水、进展和提醒。可保存到移动硬盘或其他设备。</p></div><button class="primary" data-action="backup-export">导出备份</button></div><div class="setting-row"><div><strong>从备份文件恢复</strong><p>先预览文件内容，再确认替换当前数据；替换前会自动保留一份备份。</p></div><button data-action="backup-import">选择备份文件</button></div><div class="setting-row"><div><strong>自动备份</strong><p>每 48 小时自动备份一次，重启不会重复备份；应用退出期间不备份。可随时点击“导出备份”手动备份，恢复前另存保护快照。本机备份合计保留最近 5 份。</p></div>' +
     badge(backupInfo?.automatic_error ? "备份异常" : "已开启", backupInfo?.automatic_error ? "warn" : "good") +
     '</div>' +
     (backupInfo?.automatic_error ? '<p class="form-error" role="alert">' + esc(backupInfo.automatic_error) + "</p>" : "") +
@@ -1382,7 +1411,7 @@ const actions = {
   "reset-motto": async () => {
     await api("preferences", "PUT", { dashboard_motto: "" });
     await refresh();
-    notice("已恢复默认格言");
+    notice("已恢复每日金句");
   },
   refresh: async () => {
     await refresh();
@@ -1477,6 +1506,9 @@ document.addEventListener("change", async (e) => {
     el.disabled = false;
   }
 });
+setInterval(refreshDailyMotto, 60000);
+document.addEventListener("visibilitychange", refreshDailyMotto);
+window.addEventListener("focus", refreshDailyMotto);
 refresh().catch((error) => {
   $("#content").innerHTML =
     '<div class="panel empty"><strong>未能读取本地数据</strong><p>' +
