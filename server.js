@@ -82,6 +82,18 @@ function uniqueNumber(db, c) {
   )
     throw invalid("内部案号已存在：" + c.case_no);
 }
+function recordProgressAudit(meta, action, caseId, progressId, at, changes = {}) {
+  meta.audit_log ||= [];
+  meta.audit_log.push({
+    id: makeId(),
+    action,
+    case_id: caseId,
+    progress_id: progressId,
+    actor: "本机",
+    at,
+    ...changes,
+  });
+}
 function summary(cases) {
   const totals = {
     count: cases.length,
@@ -371,13 +383,75 @@ export function createLocalApp({
           }
           if (action === "progress" && method === "POST") {
             const b = await body(req),
-              text = String(b.text || "").trim();
+              text = String(b.text || "").trim(),
+              at = timestamp();
             if (!text || text.length > 20000)
               throw invalid("请填写 1 至 20000 字的进展");
             store.update((d) => {
               const item = findCase(d, id);
-              item.progress.push({ id: makeId(), text, at: timestamp() });
-              item.updated_at = timestamp();
+              const record = { id: makeId(), text, at };
+              item.progress.push(record);
+              recordProgressAudit(d.meta, "progress.created", id, record.id, at, {
+                after_text: text,
+              });
+              item.updated_at = at;
+              item.revision++;
+            });
+            return json(res, 200, { ok: true });
+          }
+          const progressId = action.startsWith("progress/")
+            ? action.slice("progress/".length)
+            : "";
+          if (progressId && ["PUT", "DELETE"].includes(method)) {
+            const b = await body(req),
+              latest = findCase(store.db, id),
+              requestedProgressId = progressId;
+            if (!Number.isSafeInteger(b.revision))
+              throw invalid("案件版本缺失，请重新打开后操作", 409);
+            checkRevision(latest, b);
+            const previous = latest.progress.find(
+              (item) => item.id === requestedProgressId,
+            );
+            if (!previous) throw invalid("进展记录不存在", 404);
+            const text = method === "PUT" ? String(b.text || "").trim() : "";
+            if (method === "PUT" && (!text || text.length > 20000))
+              throw invalid("请填写 1 至 20000 字的进展");
+            const at = timestamp();
+            store.update((d) => {
+              const item = findCase(d, id);
+              checkRevision(item, b);
+              const index = item.progress.findIndex(
+                (entry) => entry.id === requestedProgressId,
+              );
+              if (index < 0) throw invalid("进展记录不存在", 404);
+              const current = item.progress[index];
+              if (method === "PUT") {
+                item.progress[index] = {
+                  ...current,
+                  text,
+                  edited_by: "本机",
+                  edited_at: at,
+                };
+                recordProgressAudit(
+                  d.meta,
+                  "progress.updated",
+                  id,
+                  requestedProgressId,
+                  at,
+                  { before_text: current.text, after_text: text },
+                );
+              } else {
+                item.progress.splice(index, 1);
+                recordProgressAudit(
+                  d.meta,
+                  "progress.deleted",
+                  id,
+                  requestedProgressId,
+                  at,
+                  { before_text: current.text },
+                );
+              }
+              item.updated_at = at;
               item.revision++;
             });
             return json(res, 200, { ok: true });

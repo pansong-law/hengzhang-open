@@ -307,6 +307,74 @@ async function fixture() {
     },
   };
 }
+test("progress editing and deletion require the current case revision and survive backups", async () => {
+  const s = await fixture();
+  try {
+    const c = (await s.request("cases", "POST", {
+      case_no: "PROGRESS-1",
+      client: "进展测试客户",
+      client_contact: "张女士 13800000000",
+      invoice_amount: 1000,
+      collected_amount: 200,
+    })).case;
+    assert.equal((await s.request("cases/" + c.id + "/progress", "POST", {
+      text: "最初进展",
+    })).status, 200);
+    const afterCreate = (await s.request("cases/" + c.id)).case;
+    const progressId = afterCreate.progress[0].id;
+    assert.equal((await s.request(
+      "cases/" + c.id + "/progress/" + progressId,
+      "PUT",
+      { text: "缺少版本" },
+    )).status, 409);
+    assert.equal((await s.request(
+      "cases/" + c.id + "/progress/" + progressId,
+      "PUT",
+      { text: "旧版本修改", revision: c.revision },
+    )).status, 409);
+    assert.equal((await s.request(
+      "cases/" + c.id + "/progress/" + progressId,
+      "PUT",
+      { text: "已修改进展", revision: afterCreate.revision },
+    )).status, 200);
+    const afterUpdate = (await s.request("cases/" + c.id)).case;
+    assert.equal(afterUpdate.progress[0].text, "已修改进展");
+    assert.equal(afterUpdate.progress[0].edited_by, "本机");
+    assert(afterUpdate.progress[0].edited_at);
+    assert.equal((await s.request(
+      "cases/" + c.id + "/progress/" + progressId,
+      "DELETE",
+      { revision: afterCreate.revision },
+    )).status, 409);
+    assert.equal((await s.request(
+      "cases/" + c.id + "/progress/" + progressId,
+      "DELETE",
+      { revision: afterUpdate.revision },
+    )).status, 200);
+    const afterDelete = (await s.request("cases/" + c.id)).case;
+    assert.deepEqual(afterDelete.progress, []);
+    assert.equal(afterDelete.revision, afterUpdate.revision + 1);
+    const events = s.app.store.db.meta.audit_log;
+    assert.deepEqual(events.map((event) => event.action), [
+      "progress.created",
+      "progress.updated",
+      "progress.deleted",
+    ]);
+    assert.equal(events[1].before_text, "最初进展");
+    assert.equal(events[1].after_text, "已修改进展");
+    assert.equal(events[2].before_text, "已修改进展");
+    assert(events.every((event) => event.case_id === c.id && event.actor === "本机"));
+    s.app.store.update((db) => { db.meta.dashboard_motto = "离线格言仍在"; });
+    const restored = readBackup(backupDocument(s.app.store.db));
+    assert.deepEqual(restored.meta.audit_log, events);
+    assert.equal(restored.meta.dashboard_motto, "离线格言仍在");
+    const oldFormat = structuredClone(s.app.store.db);
+    delete oldFormat.meta.audit_log;
+    assert.equal(readBackup(backupDocument(oldFormat)).meta.audit_log, undefined);
+  } finally {
+    await s.close();
+  }
+});
 test("empty offline workspace has no account, bill or allocation routes", async () => {
   const s = await fixture();
   try {

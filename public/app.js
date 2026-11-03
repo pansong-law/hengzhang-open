@@ -22,6 +22,15 @@ const time = (value) =>
     ? new Date(value).toLocaleString("zh-CN", { hour12: false })
     : "无法读取";
 const shortDate = (value) => (value ? String(value).slice(0, 10) : "—");
+const progressDate = (value) =>
+  value && !Number.isNaN(new Date(value).valueOf())
+    ? new Date(value).toLocaleDateString("zh-CN")
+    : "日期不详";
+const sortedProgress = (c) =>
+  (c.progress || [])
+    .slice()
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+const latestProgress = (c) => sortedProgress(c)[0] || null;
 const names = (value) => [
   ...new Set(
     String(value || "")
@@ -298,6 +307,13 @@ function render() {
 function renderDash() {
   const payable = data.cases.filter((c) => c.payable.current),
     expiring = expiryCases(),
+    invoicedUnpaid = data.cases
+      .filter((c) => c.fee_summary.invoiced_unpaid > 0)
+      .sort(
+        (a, b) =>
+          String(b.updated_at || "").localeCompare(String(a.updated_at || "")) ||
+          a.id.localeCompare(b.id),
+      ),
     recent = [...data.cases]
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
       .slice(0, 6);
@@ -367,6 +383,30 @@ function renderDash() {
           .join("")
       : '<div class="empty compact"><strong>近期没有顾问到期</strong><p>根据顾问服务期限，展示已到期和 30 天内到期的在办案件。</p></div>') +
     "</section></div>" +
+    '<section class="panel dashboard-invoiced-unpaid"><div class="panel-head"><h2>开票待支付</h2>' +
+    badge(invoicedUnpaid.length + " 件", invoicedUnpaid.length ? "warn" : "") +
+    "</div>" +
+    (invoicedUnpaid.length
+      ? invoicedUnpaid
+          .slice(0, 3)
+          .map(
+            (c) =>
+              '<div class="entry-row"><div><strong>' +
+              caseButton(c) +
+              "</strong><small>" +
+              esc(c.case_no || data.tracks[c.track]) +
+              " · 最近更新 " +
+              esc(time(c.updated_at)) +
+              '</small></div><strong class="num due">' +
+              money(c.fee_summary.invoiced_unpaid) +
+              "</strong></div>",
+          )
+          .join("") +
+        (invoicedUnpaid.length > 3
+          ? '<button class="text-button" data-action="filter-invoiced-unpaid">查看全部开票待支付案件 →</button>'
+          : "")
+      : '<div class="empty compact"><strong>暂无开票待支付</strong><p>有已开票未收款金额的案件会显示在这里。</p></div>') +
+    "</section>" +
     statsPanels() +
     (recent.length
       ? '<section class="panel"><div class="panel-head"><h2>最近更新</h2><button class="text-button" data-nav="cases">全部案件 →</button></div>' +
@@ -555,6 +595,9 @@ function renderCaseTable() {
                 esc(c.co_lawyers.join("、")) +
                 "</span>"
               : "") +
+            (c.client_contact
+              ? '<span class="sub">联系人：' + esc(c.client_contact) + "</span>"
+              : "") +
             (c.payable.current
               ? '<button class="text-button due" data-action="payable" data-id="' +
                 c.id +
@@ -568,6 +611,18 @@ function renderCaseTable() {
             caseButton(c, caseText) +
             "</span>" +
             (parties ? '<span class="sub">' + esc(parties) + "</span>" : "") +
+            (() => {
+              const latest = latestProgress(c);
+              return latest
+                ? '<span class="sub ledger-latest-progress" title="' +
+                    esc(latest.text) +
+                    '">最新进展：' +
+                    esc(progressDate(latest.at)) +
+                    " · " +
+                    esc(latest.text) +
+                    "</span>"
+                : "";
+            })() +
             '<span class="sub"><select class="inline-select" data-status="' +
             c.id +
             '" aria-label="案件状态">' +
@@ -933,8 +988,7 @@ async function editor(id = null, renew = false) {
   updateClients();
 }
 async function openDetail(id) {
-  const c = (await api("cases/" + id)).case,
-    f = c.fee_summary;
+  const c = (await api("cases/" + id)).case;
   const fields = [
     ["内部案号", c.case_no],
     ["案件类型", data.tracks[c.track]],
@@ -950,9 +1004,6 @@ async function openDetail(id) {
     ["协办律师", c.co_lawyers.join("、")],
     ["当前案件阶段", c.case_stage],
     ["服务期限 / 阶段", c.service_period],
-    ["签约日期", c.sign_date],
-    ["结案日期", c.close_date],
-    ["结案方式", c.close_method],
   ];
   openModal(
     "案件详情",
@@ -961,94 +1012,16 @@ async function openDetail(id) {
       "</h3>" +
       badge(data.tracks[c.track], "blue") +
       badge(c.status, c.status === "在办" ? "good" : "") +
-      '</div><div class="detail-summary">' +
-      [
-        ["签约律师费", f.signed],
-        ["已开票", f.invoice],
-        ["已收款", f.received],
-        ["未付金额", f.unpaid],
-        ["开票未付金额", f.invoiced_unpaid],
-      ]
-        .map(
-          ([k, v]) =>
-            "<div><span>" +
-            k +
-            "</span><strong>" +
-            money(v) +
-            "</strong></div>",
-        )
-        .join("") +
-      '</div><div class="detail-actions"><button class="primary" data-action="edit" data-id="' +
-      id +
-      '">编辑案件</button><button data-action="collection" data-id="' +
-      id +
-      '">登记到账</button><button data-action="payable" data-id="' +
-      id +
-      '">' +
-      (c.payable.current ? "查看待开票" : "标记待开票") +
-      '</button><button data-action="progress" data-id="' +
-      id +
-      '">记录进展</button>' +
-      (c.track === "advisory"
-        ? '<button data-action="renew" data-id="' + id + '">续签</button>'
-        : "") +
-      '<button class="danger" data-action="delete" data-id="' +
-      id +
-      '">删除案件</button></div><dl class="detail-grid">' +
+      '</div><dl class="detail-grid">' +
       fields
         .filter(([, v]) => v)
         .map(([k, v]) => "<div><dt>" + k + "</dt><dd>" + esc(v) + "</dd></div>")
         .join("") +
-      "</dl>" +
-      (c.fee_note
-        ? '<h3>费用说明</h3><p class="pre small">' + esc(c.fee_note) + "</p>"
-        : "") +
-      (c.notes
-        ? '<h3>备注</h3><p class="pre small">' + esc(c.notes) + "</p>"
-        : "") +
-      '<div class="form-section"><h3>收款流水</h3>' +
-      (c.opening_received
-        ? '<p class="hint">期初或台账直接登记已收款：' +
-          money(c.opening_received) +
-          "（不含下列流水）</p>"
-        : "") +
-      (c.collections.length
-        ? "<table><thead><tr><th>到账日期</th><th>金额</th><th>备注</th><th></th></tr></thead><tbody>" +
-          c.collections
-            .map(
-              (r) =>
-                "<tr><td>" +
-                esc(r.date) +
-                '</td><td class="num">' +
-                money(r.amount) +
-                '</td><td class="pre">' +
-                esc(r.note) +
-                '</td><td><button class="text-button danger" data-action="delete-collection" data-id="' +
-                id +
-                '" data-receipt="' +
-                esc(r.id) +
-                '">删除</button></td></tr>',
-            )
-            .join("") +
-          "</tbody></table>"
-        : '<p class="hint">暂无逐笔收款记录。</p>') +
-      '</div><div class="form-section"><h3>案件进展</h3>' +
-      (c.progress.length
-        ? '<div class="timeline">' +
-          [...c.progress]
-            .reverse()
-            .map(
-              (r) =>
-                "<article><small>" +
-                time(r.at) +
-                "</small><p>" +
-                esc(r.text) +
-                "</p></article>",
-            )
-            .join("") +
-          "</div>"
-        : '<p class="hint">暂无进展记录。</p>') +
-      "</div>",
+      '</dl><section class="detail-progress"><div class="panel-head"><h3>案件进展</h3><button class="primary" data-action="progress" data-id="' +
+      id +
+      '">管理进展</button></div><div class="progress-timeline">' +
+      progressEntries(c) +
+      "</div></section>",
   );
 }
 function collection(id) {
@@ -1071,18 +1044,115 @@ function collection(id) {
     "登记到账",
   );
 }
-function progress(id) {
-  const c = findCase(id);
-  form(
-    "记录进展 · " + labelCase(c),
-    textArea("text", "本次案件进展", "", 'class="full"'),
-    async (f) => {
-      await api("cases/" + id + "/progress", "POST", values(f));
-      closeModal();
-      await refresh();
-      notice("进展已保存");
-    },
-    "保存进展",
+function progressEntries(c, editable = false) {
+  return (
+    sortedProgress(c)
+      .map((entry) => {
+        const progressId = esc(entry.id),
+          dateLabel = entry.edited_at
+            ? "修改于 " + progressDate(entry.edited_at)
+            : "记录于 " + progressDate(entry.at);
+        return (
+          '<article class="progress-entry" data-progress-entry="' +
+          progressId +
+          '"><div class="progress-entry-main"><p data-progress-text>' +
+          esc(entry.text) +
+          '</p><form class="progress-edit-form" data-progress-edit-form hidden><label>修改进展<textarea name="text" rows="2" required>' +
+          esc(entry.text) +
+          '</textarea></label><div class="form-actions"><button type="button" data-progress-cancel>取消</button><button type="submit" class="primary">保存修改</button></div></form><small>' +
+          dateLabel +
+          "</small></div>" +
+          (editable
+            ? '<div class="progress-entry-actions"><button type="button" class="text-button" data-progress-edit>修改</button><button type="button" class="text-button danger" data-progress-delete>删除</button></div>'
+            : "") +
+          "</article>"
+        );
+      })
+      .join("") || '<p class="hint">暂无进展记录。</p>'
+  );
+}
+async function progress(id) {
+  const c = (await api("cases/" + id)).case;
+  openModal(
+    "案件进展 · " + labelCase(c),
+    '<div class="progress-manager"><div class="progress-timeline" aria-label="进展记录">' +
+      progressEntries(c, true) +
+      '</div><form id="progress-create-form"><label>新增进展<textarea name="text" rows="3" required maxlength="20000" placeholder="如：已提交材料，等待法院通知"></textarea></label><div class="form-actions"><button type="button" data-action="close-modal">关闭</button><button type="submit" class="primary">保存进展</button></div></form></div>',
+  );
+  const root = $("#modal-body");
+  const saveForm = (formEl, save, success) => {
+    formEl.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = formEl.querySelector('[type="submit"]');
+      button.disabled = true;
+      try {
+        await save(formEl);
+        await refresh();
+        notice(success);
+        await progress(id);
+      } catch (error) {
+        notice(error.message);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  };
+  const createForm = root.querySelector("#progress-create-form");
+  saveForm(
+    createForm,
+    (formEl) =>
+      api("cases/" + id + "/progress", "POST", {
+        text: formEl.elements.text.value,
+      }),
+    "进展已记录",
+  );
+  root.querySelectorAll("[data-progress-edit]").forEach((button) =>
+    button.addEventListener("click", () => {
+      const entry = button.closest("[data-progress-entry]");
+      entry.querySelector("[data-progress-text]").hidden = true;
+      entry.querySelector("[data-progress-edit-form]").hidden = false;
+      entry.querySelector("[data-progress-edit-form] textarea").focus();
+    }),
+  );
+  root.querySelectorAll("[data-progress-cancel]").forEach((button) =>
+    button.addEventListener("click", () => {
+      const entry = button.closest("[data-progress-entry]");
+      entry.querySelector("[data-progress-edit-form]").hidden = true;
+      entry.querySelector("[data-progress-text]").hidden = false;
+    }),
+  );
+  root.querySelectorAll("[data-progress-edit-form]").forEach((formEl) =>
+    saveForm(
+      formEl,
+      (editForm) =>
+        api(
+          "cases/" + id + "/progress/" +
+            formEl.closest("[data-progress-entry]").dataset.progressEntry,
+          "PUT",
+          { text: editForm.elements.text.value, revision: c.revision },
+        ),
+      "进展已修改",
+    ),
+  );
+  root.querySelectorAll("[data-progress-delete]").forEach((button) =>
+    button.addEventListener("click", async () => {
+      const entry = button.closest("[data-progress-entry]");
+      if (!confirm("确认删除这条进展记录？")) return;
+      button.disabled = true;
+      try {
+        await api(
+          "cases/" + id + "/progress/" + entry.dataset.progressEntry,
+          "DELETE",
+          { revision: c.revision },
+        );
+        await refresh();
+        notice("进展已删除");
+        await progress(id);
+      } catch (error) {
+        notice(error.message);
+        button.disabled = false;
+      }
+    }),
   );
 }
 async function payable(id) {
@@ -1430,6 +1500,16 @@ const actions = {
   "fee-note": (el) => {
     const c = findCase(el.dataset.id);
     openModal("费用说明", '<p class="pre">' + esc(c.fee_note) + "</p>");
+  },
+  "filter-invoiced-unpaid": async () => {
+    filter = {
+      track: "",
+      q: "",
+      field: "all",
+      status: "",
+      finance: "invoiced_unpaid",
+    };
+    await navigate("cases");
   },
   "close-modal": closeModal,
   "reset-filter": () => {

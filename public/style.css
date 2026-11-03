@@ -335,6 +335,9 @@ main > header {
   grid-template-columns: 1fr 1fr;
   gap: 18px;
 }
+.dashboard-invoiced-unpaid {
+  margin-top: 18px;
+}
 .entry-row {
   display: flex;
   align-items: center;
@@ -523,6 +526,12 @@ tbody tr:hover {
   margin-top: 5px;
   overflow-wrap: anywhere;
 }
+.ledger-latest-progress {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .inline-select {
   font-size: 10px;
   padding: 2px 4px;
@@ -704,6 +713,61 @@ input[readonly] {
   margin: 5px 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.detail-progress {
+  margin-top: 20px;
+}
+.detail-progress .panel-head h3 {
+  margin: 0;
+}
+.progress-timeline {
+  display: grid;
+  gap: 0;
+  max-height: 38vh;
+  overflow: auto;
+  margin-bottom: 16px;
+}
+.progress-entry {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+.progress-entry:first-child {
+  border-top: 1px solid var(--line);
+}
+.progress-entry-main {
+  min-width: 0;
+  flex: 1;
+}
+.progress-entry-main > p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.progress-entry-main > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.progress-entry-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.progress-edit-form {
+  margin: 0 0 8px;
+}
+.progress-manager #progress-create-form {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.progress-manager #progress-create-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
 }
 .setting-row {
   display: flex;

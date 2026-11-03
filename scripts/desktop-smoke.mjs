@@ -121,6 +121,7 @@ try {
   await page.getByRole("button", { name: "＋ 新建案件", exact: true }).click();
   await page.locator("[name=case_no]").fill("MAC-001");
   await page.locator("[name=client]").fill("桌面测试客户");
+  await page.locator("[name=client_contact]").fill("张女士 13800000000");
   await page.locator("[name=plaintiff]").fill("桌面测试客户");
   await page.locator("[name=defendant]").fill("乙公司");
   await page.locator("[name=case_type]").fill("买卖合同纠纷");
@@ -132,9 +133,22 @@ try {
   await page.locator("[name=fee_note]").fill("签约支付，余款结案后支付");
   await page.getByRole("button", { name: "保存案件", exact: true }).click();
   await expect(page.getByRole("heading", { name: "案件详情" })).toBeVisible();
+  await expect(page.locator("#modal-body")).toContainText("客户联系人");
+  await expect(page.locator("#modal-body")).toContainText("案件进展");
+  await expect(page.locator("#modal-body")).not.toContainText("收款流水");
+  await expect(page.locator("#modal-body")).not.toContainText("费用说明");
+  await expect(page.getByRole("button", { name: "登记到账", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(page.locator(".dashboard-invoiced-unpaid")).toContainText("MAC-001");
+  await expect(page.locator(".dashboard-invoiced-unpaid")).toContainText("4,500.75");
   await page.getByRole("button", { name: "案件台账", exact: true }).click();
   await expect(page.locator("#case-table")).toContainText("MAC-001");
+  await expect(page.locator("#case-table")).toContainText("张女士 13800000000");
+  const initialActions = await page.locator("#case-table tbody tr")
+    .filter({ hasText: "MAC-001" })
+    .locator(".table-actions [data-action]")
+    .evaluateAll((buttons) => buttons.map((button) => button.dataset.action));
+  assert.deepEqual(initialActions.slice(0, 4), ["edit", "collection", "payable", "progress"]);
   await expect(page.locator("#case-table")).toContainText("4,500.75");
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(page.locator("[name=invoiced_unpaid]")).toHaveValue("4500.75");
@@ -151,14 +165,32 @@ try {
   await page.getByRole("button", { name: "进展", exact: true }).click();
   await page.locator("[name=text]").fill("已完成材料整理，等待开庭。");
   await page.getByRole("button", { name: "保存进展", exact: true }).click();
-  await expect(page.locator("#modal")).not.toBeVisible();
+  await expect(page.locator("#modal")).toBeVisible();
+  await expect(page.locator("#modal-body")).toContainText("已完成材料整理，等待开庭。");
+  const firstProgress = page.locator("[data-progress-entry]").first();
+  await firstProgress.getByRole("button", { name: "修改", exact: true }).click();
+  await firstProgress.locator("textarea").fill("进展已修改：等待开庭。");
+  await firstProgress.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect(page.locator("#modal-body")).toContainText("进展已修改：等待开庭。");
+  await page.locator("#progress-create-form textarea").fill("待删除的测试进展");
+  await page.getByRole("button", { name: "保存进展", exact: true }).click();
+  await expect(page.locator("#modal-body")).toContainText("待删除的测试进展");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("[data-progress-entry]").filter({ hasText: "待删除的测试进展" })
+    .getByRole("button", { name: "删除", exact: true }).click();
+  await expect(page.locator("#modal-body")).not.toContainText("待删除的测试进展");
+  await page.getByRole("button", { name: "关闭", exact: true }).last().click();
   const savedProgress = (await request(page, "workspace")).cases.find(
     (c) => c.case_no === "MAC-001",
   );
   assert.equal(
     savedProgress.progress.at(-1).text,
-    "已完成材料整理，等待开庭。",
+    "进展已修改：等待开庭。",
   );
+  await expect(page.locator("#case-table")).toContainText(
+    new Date(savedProgress.progress.at(-1).at).toLocaleDateString("zh-CN"),
+  );
+  await expect(page.locator("#case-table")).toContainText("进展已修改：等待开庭。");
   await page.getByRole("button", { name: "应付", exact: true }).click();
   await page.locator("[name=amount]").fill("5000");
   await page.locator("[name=note]").fill("第二期费用待开票");
@@ -381,7 +413,7 @@ try {
   assert.equal(restored.cases.length, 4);
   assert.equal(
     restored.cases.find((x) => x.id === c.id).progress[0].text,
-    "已完成材料整理，等待开庭。",
+    "进展已修改：等待开庭。",
   );
   await page.screenshot({
     path: path.join(workspace, "备份恢复.png"),
