@@ -195,6 +195,7 @@ else {
           currentVersion: app.getVersion(),
           repository: source.repository,
           dataDir,
+          downloadDir: path.join(dataDir, "updates"),
           fetchImpl: (url, options) => net.fetch(url, options),
           onChange: (state) => {
             if (window && !window.isDestroyed())
@@ -231,6 +232,16 @@ else {
           return updateState();
         });
         ipcMain.handle("hengzhang:updates:download", async (event) => {
+          trusted(event);
+          return await updates.downloadInstaller();
+        });
+        ipcMain.handle("hengzhang:updates:install", async (event) => {
+          trusted(event);
+          const error = await shell.openPath(updates.getInstallerPath());
+          if (error) throw Error("未能打开更新安装包");
+          return true;
+        });
+        ipcMain.handle("hengzhang:updates:release-page", async (event) => {
           trusted(event);
           await shell.openExternal(updates.downloadPage());
           return true;

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,9 @@ import {
   releaseInfo,
 } from "../desktop/updates.mjs";
 const repository = "pansong-law/hengzhang-open";
+const installerBytes = Buffer.from("hengzhang-dmg-binary-payload-v1.0.4");
+const installerDigest =
+  "sha256:" + createHash("sha256").update(installerBytes).digest("hex");
 function release(version = "1.0.4", patch = {}) {
   const name = "Hengzhang-" + version + "-universal.dmg";
   return {
@@ -22,7 +26,8 @@ function release(version = "1.0.4", patch = {}) {
       {
         name,
         state: "uploaded",
-        size: 100,
+        size: installerBytes.length,
+        digest: installerDigest,
         browser_download_url:
           "https://github.com/" +
           repository +
@@ -72,6 +77,14 @@ test("only a complete matching Mac installer can trigger an update", () => {
         {
           ...release().assets[0],
           browser_download_url: "https://bad.example/app.dmg",
+        },
+      ],
+    },
+    {
+      assets: [
+        {
+          ...release().assets[0],
+          digest: "sha256:bad",
         },
       ],
     },
@@ -314,4 +327,82 @@ test("failed automatic attempts also retain the 48 hour interval after restart",
     assert.equal((await restarted.check()).status, "error");
     assert.equal(calls, 2);
   } finally { s.close(); }
+});
+test("in-app installer download streams progress, verifies SHA-256 and exposes the DMG path", async () => {
+  let now = 1000;
+  const states = [],
+    half = Math.floor(installerBytes.length / 2),
+    chunks = [installerBytes.subarray(0, half), installerBytes.subarray(half)];
+  const s = fixture(
+    async (url) => {
+      if (url.endsWith("/releases/latest")) return response(release("1.0.4"));
+      let index = 0;
+      const stream = new ReadableStream({
+        pull(controller) {
+          if (index < chunks.length) {
+            now += 200;
+            controller.enqueue(chunks[index++]);
+          } else controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-length": String(installerBytes.length) },
+      });
+    },
+    {
+      now: () => now,
+      onChange: (snapshot) => states.push(snapshot),
+    },
+  );
+  try {
+    await assert.rejects(() => s.updates.downloadInstaller(), /没有可下载/);
+    await s.updates.check({ manual: true });
+    assert.throws(() => s.updates.getInstallerPath(), /请先完整下载/);
+    const done = await s.updates.downloadInstaller();
+    assert.equal(done.download.status, "downloaded");
+    assert.equal(done.download.percent, 100);
+    assert.equal(done.download.bytes, installerBytes.length);
+    assert(
+      states.some(
+        (st) =>
+          st.download.status === "downloading" &&
+          st.download.percent > 0 &&
+          st.download.percent < 100 &&
+          st.download.bytesPerSecond > 0 &&
+          st.download.remainingSeconds >= 1,
+      ),
+    );
+    const dmg = s.updates.getInstallerPath();
+    assert.equal(path.basename(dmg), "Hengzhang-1.0.4-universal.dmg");
+    assert.deepEqual(fs.readFileSync(dmg), installerBytes);
+    await s.updates.check({ manual: true });
+    assert.equal(s.updates.snapshot().download.status, "downloaded");
+    assert.equal(s.updates.getInstallerPath(), dmg);
+  } finally {
+    s.close();
+  }
+});
+test("corrupted or truncated installer downloads are deleted and never exposed", async () => {
+  for (const payload of [
+    Buffer.from("x".repeat(installerBytes.length)),
+    installerBytes.subarray(0, 5),
+  ]) {
+    const s = fixture(async (url) => {
+      if (url.endsWith("/releases/latest")) return response(release("1.0.4"));
+      return new Response(payload, { status: 200 });
+    });
+    try {
+      await s.updates.check({ manual: true });
+      const state = await s.updates.downloadInstaller();
+      assert.equal(state.download.status, "error");
+      assert.throws(() => s.updates.getInstallerPath());
+      const files = fs
+        .readdirSync(s.dir)
+        .filter((f) => f.endsWith(".dmg") || f.endsWith(".partial"));
+      assert.deepEqual(files, []);
+    } finally {
+      s.close();
+    }
+  }
 });

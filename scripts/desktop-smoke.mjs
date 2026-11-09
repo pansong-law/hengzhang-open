@@ -444,12 +444,22 @@ try {
   // Exercise native IPC and update rendering without creating a fake GitHub release.
   await page.getByRole("button", { name: "设置与备份", exact: true }).click();
   await application.evaluate(({ net, shell }) => {
+    const payload = "hengzhang-dmg-9.9.9";
     globalThis.updateRealFetch = net.fetch;
     globalThis.updateRealShell = shell.openExternal;
+    globalThis.updateRealOpenPath = shell.openPath;
     globalThis.updateDownloadCalls = [];
+    globalThis.updateInstallerPaths = [];
     globalThis.updateRequests = [];
     shell.openExternal = async (url) => {
       globalThis.updateDownloadCalls.push(url);
+    };
+    shell.openPath = async (targetPath) => {
+      if (String(targetPath).endsWith(".dmg")) {
+        globalThis.updateInstallerPaths.push(targetPath);
+        return "";
+      }
+      return globalThis.updateRealOpenPath(targetPath);
     };
     net.fetch = async (url, options) => {
       globalThis.updateRequests.push({
@@ -457,6 +467,12 @@ try {
         credentials: options.credentials,
         hasBody: !!options.body,
       });
+      if (String(url).endsWith("/Hengzhang-9.9.9-universal.dmg")) {
+        return new Response(payload, {
+          status: 200,
+          headers: { "content-length": String(payload.length) },
+        });
+      }
       return new Response(
         JSON.stringify({
           tag_name: "v9.9.9",
@@ -468,7 +484,9 @@ try {
             {
               name: "Hengzhang-9.9.9-universal.dmg",
               state: "uploaded",
-              size: 100,
+              size: payload.length,
+              digest:
+                "sha256:91129bd4172ac8d43c3f1de4628dd9ece170fe0c919c8e7401b7929cc8f415f7",
               browser_download_url:
                 "https://github.com/pansong-law/hengzhang-open/releases/download/v9.9.9/Hengzhang-9.9.9-universal.dmg",
             },
@@ -484,7 +502,7 @@ try {
   ).toBeVisible();
   await expect(page.locator(".update-notes")).toContainText("<img");
   await expect(page.locator(".update-notes img")).toHaveCount(0);
-  await page.locator("[data-update=download]").click();
+  await page.locator("[data-update=release-page]").click();
   await expect
     .poll(() => application.evaluate(() => globalThis.updateDownloadCalls))
     .toEqual([
@@ -494,6 +512,14 @@ try {
   await expect(page.locator("#update-banner")).toBeVisible();
   await page.locator("[data-update=dismiss]").click();
   await expect(page.locator("#update-banner")).not.toBeVisible();
+  await page.locator("#software-updates [data-update=details]").click();
+  await page.locator("#modal [data-update=download]").click();
+  await expect(page.locator("#modal [data-update=install]")).toBeVisible();
+  await page.locator("#modal [data-update=install]").click();
+  await expect
+    .poll(() => application.evaluate(() => globalThis.updateInstallerPaths.length))
+    .toBe(1);
+  await page.locator("[data-update=later]").click();
   await page.locator("#automatic-updates").uncheck();
   await expect
     .poll(() =>
@@ -537,9 +563,12 @@ try {
   assert(
     updateRequests.every(
       (r) =>
-        r.url.startsWith(
+        (r.url.startsWith(
           "https://api.github.com/repos/pansong-law/hengzhang-open/",
-        ) &&
+        ) ||
+          r.url.startsWith(
+            "https://github.com/pansong-law/hengzhang-open/releases/download/",
+          )) &&
         r.credentials === "omit" &&
         !r.hasBody,
     ),
@@ -547,6 +576,7 @@ try {
   await application.evaluate(({ net, shell }) => {
     net.fetch = globalThis.updateRealFetch;
     shell.openExternal = globalThis.updateRealShell;
+    shell.openPath = globalThis.updateRealOpenPath;
   });
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);

@@ -1,7 +1,16 @@
 import fs from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 const MAX_RESPONSE = 1024 * 1024;
 export const AUTOMATIC_CHECK_INTERVAL = 48 * 60 * 60 * 1000;
+const SAFE_DOWNLOAD_ERRORS = new Set([
+  "下载服务暂时不可用",
+  "下载地址校验失败",
+  "安装包大小与发布信息不一致",
+  "下载文件超过发布大小",
+  "安装包未完整下载",
+  "安装包校验失败，请重新下载",
+]);
 export function versionParts(version) {
   const m = String(version).match(
     /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/,
@@ -46,11 +55,16 @@ export function releaseInfo(release, repository, currentVersion) {
       a.browser_download_url === expected,
   );
   if (!asset) throw Error("新版安装包尚未就绪，请稍后重试");
+  if (typeof asset.digest !== "string" || !/^sha256:[a-f0-9]{64}$/i.test(asset.digest))
+    throw Error("新版安装包校验信息尚未就绪，请稍后重试");
   return {
     version,
     tag: release.tag_name,
     releaseUrl:
       "https://github.com/" + repository + "/releases/tag/" + release.tag_name,
+    downloadUrl: expected,
+    downloadSize: asset.size,
+    downloadDigest: asset.digest.slice("sha256:".length).toLowerCase(),
     notes: String(release.body || "本次发布未填写更新说明。").slice(0, 16000),
     publishedAt: release.published_at || null,
     available: compareVersions(version, currentVersion) > 0,
@@ -61,6 +75,7 @@ export class ReleaseUpdates {
     currentVersion,
     repository,
     dataDir,
+    downloadDir = dataDir,
     fetchImpl = fetch,
     onChange = () => {},
     now = () => Date.now(),
@@ -72,12 +87,26 @@ export class ReleaseUpdates {
       currentVersion,
       repository,
       fetchImpl,
+      downloadDir,
       onChange,
       now,
       timeoutMs,
     });
     this.file = path.join(dataDir, "update-preferences.json");
     this.pending = null;
+    this.downloadPending = null;
+    this.downloadController = null;
+    this.installerPath = null;
+    this.artifact = null;
+    this.download = {
+      status: "idle",
+      bytes: 0,
+      totalBytes: 0,
+      percent: 0,
+      bytesPerSecond: 0,
+      remainingSeconds: null,
+      message: "",
+    };
     this.prefs = {
       automatic: true,
       dismissedVersion: null,
@@ -116,6 +145,7 @@ export class ReleaseUpdates {
   snapshot() {
     return {
       ...this.state,
+      download: { ...this.download },
       automatic: this.prefs.automatic,
       dismissed: this.prefs.dismissedVersion === this.state.latestVersion,
     };
@@ -248,6 +278,38 @@ export class ReleaseUpdates {
       );
       this.prefs.lastCheckedAt = new Date(this.now()).toISOString();
       this.save();
+      const sameVersion =
+        info.available &&
+        this.artifact?.version === info.version &&
+        this.artifact?.digest === info.downloadDigest;
+      this.artifact = info.available
+        ? {
+            url: info.downloadUrl,
+            version: info.version,
+            size: info.downloadSize,
+            digest: info.downloadDigest,
+          }
+        : null;
+      const keepDownload =
+        sameVersion &&
+        (this.download.status === "downloading" ||
+          (this.download.status === "downloaded" &&
+            this.installerPath &&
+            fs.existsSync(this.installerPath)));
+      if (!keepDownload) {
+        if (this.download.status === "downloading")
+          this.downloadController?.abort();
+        this.installerPath = null;
+        this.download = {
+          status: "idle",
+          bytes: 0,
+          totalBytes: info.available ? info.downloadSize || 0 : 0,
+          percent: 0,
+          bytesPerSecond: 0,
+          remainingSeconds: null,
+          message: "",
+        };
+      }
       return this.emit({
         status: info.available ? "available" : "up_to_date",
         latestVersion: info.version,
@@ -276,6 +338,7 @@ export class ReleaseUpdates {
   }
   stop() {
     this.controller?.abort();
+    this.downloadController?.abort();
   }
   downloadPage() {
     if (!this.state.available || !this.state.releaseUrl)
@@ -283,5 +346,159 @@ export class ReleaseUpdates {
     const prefix = "https://github.com/" + this.repository + "/releases/tag/";
     if (!this.state.releaseUrl.startsWith(prefix)) throw Error("更新地址无效");
     return this.state.releaseUrl;
+  }
+  async downloadInstaller() {
+    if (!this.state.available || !this.artifact)
+      throw Error("当前没有可下载的新版本");
+    if (this.downloadPending) return this.downloadPending;
+    if (
+      this.download.status === "downloaded" &&
+      this.installerPath &&
+      fs.existsSync(this.installerPath)
+    )
+      return this.snapshot();
+    this.downloadPending = this.performDownload().finally(() => {
+      this.downloadPending = null;
+      this.downloadController = null;
+    });
+    return this.downloadPending;
+  }
+  async performDownload() {
+    const artifact = this.artifact,
+      controller = new AbortController(),
+      fileName = "Hengzhang-" + artifact.version + "-universal.dmg",
+      target = path.join(this.downloadDir, fileName),
+      partial = path.join(
+        this.downloadDir,
+        "." + fileName + "." + randomUUID() + ".partial",
+      );
+    this.downloadController = controller;
+    const startedAt = this.now();
+    this.installerPath = null;
+    this.download = {
+      status: "downloading",
+      bytes: 0,
+      totalBytes: artifact.size,
+      percent: 0,
+      bytesPerSecond: 0,
+      remainingSeconds: null,
+      message: "正在下载更新…",
+    };
+    this.emit({});
+    let handle;
+    try {
+      await fs.promises.mkdir(this.downloadDir, { recursive: true });
+      const response = await this.fetchImpl(artifact.url, {
+        headers: {
+          Accept: "application/octet-stream",
+          "User-Agent": "Hengzhang/" + this.currentVersion,
+        },
+        signal: controller.signal,
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "follow",
+      });
+      if (!response.ok || !response.body)
+        throw Error("下载服务暂时不可用");
+      const finalUrl = response.url ? new URL(response.url) : null;
+      if (
+        finalUrl &&
+        (finalUrl.protocol !== "https:" ||
+          ![
+            "github.com",
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+          ].includes(finalUrl.hostname))
+      )
+        throw Error("下载地址校验失败");
+      const length = Number(response.headers.get("content-length") || 0);
+      if (length && length !== artifact.size)
+        throw Error("安装包大小与发布信息不一致");
+      handle = await fs.promises.open(partial, "wx", 0o600);
+      const reader = response.body.getReader(),
+        hash = createHash("sha256");
+      let bytes = 0,
+        lastEmit = startedAt;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = Buffer.from(value);
+          bytes += chunk.length;
+          if (bytes > artifact.size) throw Error("下载文件超过发布大小");
+          hash.update(chunk);
+          await handle.writeFile(chunk);
+          const now = this.now();
+          if (now - lastEmit >= 150 || bytes === artifact.size) {
+            const elapsed = Math.max(1, now - startedAt),
+              bytesPerSecond = Math.round((bytes * 1000) / elapsed);
+            this.download = {
+              status: "downloading",
+              bytes,
+              totalBytes: artifact.size,
+              percent: Math.floor((bytes / artifact.size) * 100),
+              bytesPerSecond,
+              remainingSeconds: bytesPerSecond
+                ? Math.ceil((artifact.size - bytes) / bytesPerSecond)
+                : null,
+              message: "正在下载更新…",
+            };
+            this.emit({});
+            lastEmit = now;
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+      if (bytes !== artifact.size) throw Error("安装包未完整下载");
+      if (hash.digest("hex") !== artifact.digest)
+        throw Error("安装包校验失败，请重新下载");
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await fs.promises.rename(partial, target);
+      this.installerPath = target;
+      this.download = {
+        status: "downloaded",
+        bytes,
+        totalBytes: artifact.size,
+        percent: 100,
+        bytesPerSecond: 0,
+        remainingSeconds: 0,
+        message: "下载完成，可打开安装包。",
+      };
+      return this.emit({});
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      await fs.promises.rm(partial, { force: true }).catch(() => {});
+      this.installerPath = null;
+      this.download = {
+        status: "error",
+        bytes: 0,
+        totalBytes: artifact.size,
+        percent: 0,
+        bytesPerSecond: 0,
+        remainingSeconds: null,
+        message: controller.signal.aborted
+          ? "下载已停止。"
+          : SAFE_DOWNLOAD_ERRORS.has(error?.message)
+            ? error.message
+            : "下载失败，请检查网络后重试。",
+      };
+      return this.emit({});
+    }
+  }
+  getInstallerPath() {
+    if (
+      this.download.status !== "downloaded" ||
+      !this.installerPath ||
+      !this.artifact ||
+      path.dirname(this.installerPath) !== this.downloadDir ||
+      path.basename(this.installerPath) !==
+        "Hengzhang-" + this.artifact.version + "-universal.dmg" ||
+      !fs.existsSync(this.installerPath)
+    )
+      throw Error("请先完整下载更新安装包");
+    return this.installerPath;
   }
 }

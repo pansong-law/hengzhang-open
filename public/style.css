@@ -1078,12 +1078,125 @@ dialog::backdrop {
 .update-result {
   font-size: 13px;
 }
+.update-download-card {
+  border: 1px solid #d9e4ec;
+  border-radius: 12px;
+  background: #ffffff;
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+.update-download-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #edf2f6;
+}
+.update-download-head strong {
+  display: block;
+  font-size: 15px;
+  color: var(--ink);
+}
+.update-download-head span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.update-download-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid #e1e9ef;
+  background: #f8fbfd;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--blue);
+  flex: none;
+}
+.update-download-icon[data-status="downloaded"] {
+  color: #16a34a;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.update-download-icon[data-status="error"] {
+  color: #dc2626;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.update-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #cbd5e1;
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: update-spin 0.9s linear infinite;
+}
+@keyframes update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.update-download-body {
+  padding: 16px 18px;
+}
+.update-progress-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.update-percent {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.update-bytes {
+  font-size: 12px;
+  color: var(--muted);
+}
+.update-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e9eff4;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.update-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #22c55e;
+  transition: width 0.15s ease;
+}
+.update-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.update-stats-grid span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.update-stats-grid strong {
+  display: block;
+  font-size: 14px;
+  color: var(--ink);
+}
+.update-download-hint {
+  margin: 0;
+}
 .update-notes {
   background: #f4f7f9;
   padding: 16px;
   border-radius: 8px;
   font-size: 13px;
-  max-height: 35vh;
+  max-height: 28vh;
   overflow: auto;
   margin-bottom: 20px;
 }
