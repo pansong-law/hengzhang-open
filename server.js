@@ -32,6 +32,16 @@ import { LITIGATION_STAGES } from "./lib/litigation-stage.js";
 import { planCaseImport } from "./lib/case-import.js";
 import { advisoryRenewalDraft, renewalPeriod } from "./lib/advisory-renewal.js";
 import { mottoPreferences } from "./lib/daily-motto.js";
+import {
+  extractContractText,
+  MAX_CONTRACT_CHARS,
+} from "./lib/contract-reader.js";
+import {
+  AiConfigStore,
+  callChatModel,
+  extractCaseFromContractText,
+  fetchProviderModels,
+} from "./lib/ai-contract.js";
 const ROOT = path.dirname(fileURLToPath(import.meta.url)),
   PUBLIC = path.join(ROOT, "public");
 const APP_VERSION = JSON.parse(
@@ -136,8 +146,11 @@ export function createLocalApp({
       "Application Support",
       "Hengzhang Local",
     ),
+  aiFetch = fetch,
+  extractContract = extractContractText,
 } = {}) {
   const store = new LocalStore(dataDir),
+    aiStore = new AiConfigStore(dataDir),
     token = randomBytes(32).toString("hex");
   let origin, backupTimer;
   function scheduleBackup(delay = store.backupDelay()) {
@@ -188,11 +201,92 @@ export function createLocalApp({
           return json(res, 200, {
             version: APP_VERSION,
             preferences: mottoPreferences(db),
+            ai: aiStore.publicView(),
             cases,
             summary: summary(cases),
             tracks: TRACKS,
             stages: LITIGATION_STAGES,
             updated_at: timestamp(),
+          });
+        }
+        if (p === "/api/ai/config" && method === "GET")
+          return json(res, 200, { ai: aiStore.publicView() });
+        if (p === "/api/ai/config" && method === "PUT") {
+          const input = await body(req);
+          return json(res, 200, { ok: true, ai: aiStore.save(input) });
+        }
+        if (p === "/api/ai/models" && method === "POST") {
+          const input = await body(req);
+          const resolved = aiStore.resolve(input);
+          const models = await fetchProviderModels(resolved, {
+            fetchImpl: aiFetch,
+          });
+          return json(res, 200, { ok: true, models });
+        }
+        if (p === "/api/ai/test" && method === "POST") {
+          const input = await body(req);
+          const resolved = aiStore.resolve(input);
+          const reply = await callChatModel(
+            resolved,
+            [
+              {
+                role: "user",
+                content: "请仅回复“连接正常”四个字，不要包含其他内容。",
+              },
+            ],
+            { fetchImpl: aiFetch, timeoutMs: 20000, maxTokens: 64 },
+          );
+          return json(res, 200, {
+            ok: true,
+            model: resolved.model,
+            reply: reply.slice(0, 100),
+          });
+        }
+        if (p === "/api/cases/extract-contract" && method === "POST") {
+          const b = await body(req);
+          const rawText = typeof b.text === "string" ? b.text.trim() : "";
+          const filename = String(b.filename || "").trim();
+          const b64 = String(b.data_base64 || "").trim();
+          if (!rawText && (!filename || !b64))
+            throw invalid("请选择要识别的 PDF / Word 合同文件，或输入要提取的案件文字");
+          const resolved = aiStore.resolve();
+          let doc;
+          if (rawText) {
+            if (rawText.length < 6)
+              throw invalid("请输入至少 6 个字的案件描述或合同文字");
+            const truncated = rawText.length > MAX_CONTRACT_CHARS;
+            const text = truncated
+              ? rawText.slice(0, MAX_CONTRACT_CHARS)
+              : rawText;
+            doc = {
+              text,
+              format: "text",
+              pages: 1,
+              ocr_pages: 0,
+              char_count: text.length,
+              truncated,
+            };
+          } else {
+            const buffer = Buffer.from(b64, "base64");
+            doc = await extractContract({ filename, buffer });
+          }
+          const extracted = await extractCaseFromContractText(
+            doc.text,
+            resolved,
+            { fetchImpl: aiFetch },
+          );
+          return json(res, 200, {
+            ok: true,
+            extracted,
+            model: resolved.model,
+            document: {
+              filename: rawText ? "粘贴文字" : filename,
+              format: doc.format,
+              pages: doc.pages,
+              ocr_pages: doc.ocr_pages,
+              char_count: doc.char_count,
+              truncated: doc.truncated,
+            },
           });
         }
         if (p === "/api/preferences" && method === "GET")

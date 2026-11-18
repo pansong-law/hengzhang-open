@@ -265,9 +265,9 @@ test("real XLSX round trips preserve automatic and manual amount modes for every
     assert.equal(s.app.store.db.cases.find((c) => c.case_no === "project-auto").invoiced_unpaid, null);
   } finally { await s.close(); }
 });
-async function fixture() {
+async function fixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hengzhang-test-"));
-  let app = createLocalApp({ dataDir: dir }),
+  let app = createLocalApp({ dataDir: dir, ...options }),
     origin = await app.start();
   let cookie = (await fetch(origin + "/")).headers
     .get("set-cookie")
@@ -295,7 +295,7 @@ async function fixture() {
     },
     async restart() {
       await app.close();
-      app = createLocalApp({ dataDir: dir });
+      app = createLocalApp({ dataDir: dir, ...options });
       origin = await app.start();
       cookie = (await fetch(origin + "/")).headers
         .get("set-cookie")
@@ -1001,6 +1001,185 @@ test("editable invoiced unpaid survives editing, import, export and old-version 
     assert.equal(
       (await s.request("cases/" + c.id)).case.fee_summary.invoiced_unpaid,
       850,
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+function buildMinimalZip(fileName, contentBuffer) {
+  const nameBuf = Buffer.from(fileName, "utf8");
+  const dataBuf = Buffer.from(contentBuffer);
+  const localHeader = Buffer.alloc(30 + nameBuf.length);
+  localHeader.writeUInt32LE(0x04034b50, 0);
+  localHeader.writeUInt16LE(20, 4);
+  localHeader.writeUInt16LE(0, 6);
+  localHeader.writeUInt16LE(0, 8);
+  localHeader.writeUInt32LE(0, 14);
+  localHeader.writeUInt32LE(dataBuf.length, 18);
+  localHeader.writeUInt32LE(dataBuf.length, 22);
+  localHeader.writeUInt16LE(nameBuf.length, 26);
+  localHeader.writeUInt16LE(0, 28);
+  nameBuf.copy(localHeader, 30);
+
+  const centralDirOffset = localHeader.length + dataBuf.length;
+  const centralHeader = Buffer.alloc(46 + nameBuf.length);
+  centralHeader.writeUInt32LE(0x02014b50, 0);
+  centralHeader.writeUInt16LE(20, 4);
+  centralHeader.writeUInt16LE(20, 6);
+  centralHeader.writeUInt16LE(0, 8);
+  centralHeader.writeUInt16LE(0, 10);
+  centralHeader.writeUInt32LE(0, 16);
+  centralHeader.writeUInt32LE(dataBuf.length, 20);
+  centralHeader.writeUInt32LE(dataBuf.length, 24);
+  centralHeader.writeUInt16LE(nameBuf.length, 28);
+  centralHeader.writeUInt16LE(0, 30);
+  centralHeader.writeUInt16LE(0, 32);
+  centralHeader.writeUInt32LE(0, 42);
+  nameBuf.copy(centralHeader, 46);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(centralHeader.length, 12);
+  eocd.writeUInt32LE(centralDirOffset, 16);
+  return Buffer.concat([localHeader, dataBuf, centralHeader, eocd]);
+}
+
+test("AI config persists with masked key, never leaks into backups, and extracts Word/PDF contracts", async () => {
+  const aiCalls = [];
+  const s = await fixture({
+    aiFetch: async (url, options) => {
+      aiCalls.push({ url, options });
+      if (String(url).includes("/models")) {
+        return new Response(
+          JSON.stringify({
+            data: [
+              { id: "Qwen/Qwen3-8B" },
+              { id: "Pro/deepseek-ai/DeepSeek-V3" },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      const reqBody = JSON.parse(options.body);
+      if (
+        String(reqBody.messages?.[0]?.content || "").includes("连接正常")
+      ) {
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "连接正常" } }],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: `<think>分析合同主体与费用</think>\`\`\`json
+{
+  "track": "litigation",
+  "case_no": "HZ-2026-088",
+  "client": "成都宏远科技有限公司",
+  "client_contact": "王经理 13800000000",
+  "plaintiff": "成都宏远科技有限公司",
+  "defendant": "山海建设集团有限公司",
+  "third_party": "",
+  "case_type": "买卖合同纠纷",
+  "case_stage": "一审",
+  "scope": ["一审", "二审", "执行"],
+  "lawyer": "潘松、李明",
+  "co_lawyers": ["张华"],
+  "sign_date": "2026年11月15日",
+  "contract_amount": "5万元",
+  "fee_note": "固定律师费50,000元，签约5日内付30,000元，一审开庭后付20,000元",
+  "notes": "高新区法院管辖"
+}
+\`\`\``,
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  try {
+    const initial = (await s.request("workspace")).ai;
+    assert.equal(initial.provider, "siliconflow");
+    assert.equal(initial.model, "Qwen/Qwen3-8B");
+    assert.equal(initial.is_free_model, true);
+    assert.equal(initial.has_api_key, false);
+
+    const xml =
+      '<w:document><w:body><w:p><w:r><w:t>委托代理合同：甲方（委托人）成都宏远科技有限公司，乙方北京大成（成都）律师事务所，案由买卖合同纠纷，律师费人民币50000元整。</w:t></w:r></w:p></w:body></w:document>';
+    const docxBuffer = buildMinimalZip("word/document.xml", xml);
+
+    const noKey = await s.request("cases/extract-contract", "POST", {
+      filename: "委托代理合同.docx",
+      data_base64: docxBuffer.toString("base64"),
+    });
+    assert.equal(noKey.status, 400);
+    assert.match(noKey.error, /API Key/);
+
+    const saved = await s.request("ai/config", "PUT", {
+      provider: "siliconflow",
+      base_url: "https://api.siliconflow.cn/v1",
+      api_key: "sk-secret-siliconflow-1234",
+      model: "Qwen/Qwen3-8B",
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.ai.has_api_key, true);
+    assert.equal(saved.ai.masked_api_key, "sk-••••1234");
+    assert(!JSON.stringify(saved).includes("sk-secret-siliconflow-1234"));
+    assert(!fs.readFileSync(s.app.store.file, "utf8").includes("sk-secret"));
+
+    const modelsRes = await s.request("ai/models", "POST", {});
+    assert.equal(modelsRes.status, 200);
+    assert(modelsRes.models.some((m) => m.id === "Qwen/Qwen3-8B" && m.free));
+
+    const testRes = await s.request("ai/test", "POST", {});
+    assert.equal(testRes.status, 200);
+    assert.equal(testRes.reply, "连接正常");
+
+    const extracted = await s.request("cases/extract-contract", "POST", {
+      filename: "委托代理合同.docx",
+      data_base64: docxBuffer.toString("base64"),
+    });
+    assert.equal(extracted.status, 200);
+    assert.equal(extracted.document.format, "docx");
+    assert.equal(extracted.extracted.track, "litigation");
+    assert.equal(extracted.extracted.client, "成都宏远科技有限公司");
+    assert.equal(extracted.extracted.defendant, "山海建设集团有限公司");
+    assert.equal(extracted.extracted.case_type, "买卖合同纠纷");
+    assert.equal(extracted.extracted.case_stage, "一审");
+    assert.deepEqual(extracted.extracted.scope, ["一审", "二审", "执行"]);
+    assert.equal(extracted.extracted.lawyer, "潘松");
+    assert.deepEqual(extracted.extracted.co_lawyers, ["李明", "张华"]);
+    assert.equal(extracted.extracted.sign_date, "2026-11-15");
+    assert.equal(extracted.extracted.contract_amount, 50000);
+
+    const tooShortText = await s.request("cases/extract-contract", "POST", {
+      text: "太短",
+    });
+    assert.equal(tooShortText.status, 400);
+
+    const textExtracted = await s.request("cases/extract-contract", "POST", {
+      text: "客户成都宏远科技有限公司委托我所潘松、李明律师代理诉山海建设集团有限公司买卖合同纠纷一审、二审、执行，固定律师费5万元。",
+    });
+    assert.equal(textExtracted.status, 200);
+    assert.equal(textExtracted.document.format, "text");
+    assert.equal(textExtracted.document.filename, "粘贴文字");
+    assert.equal(textExtracted.extracted.client, "成都宏远科技有限公司");
+    assert.equal(textExtracted.extracted.contract_amount, 50000);
+    assert.equal(
+      fs
+        .readdirSync(s.dir)
+        .filter((f) => f.endsWith(".docx") || f.endsWith(".pdf")).length,
+      0,
     );
   } finally {
     await s.close();

@@ -1211,3 +1211,124 @@ dialog::backdrop {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+.contract-ai-box {
+  border: 1px dashed #b9d2df;
+  border-radius: 10px;
+  background: #f6fafc;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+.contract-ai-box.drag-over {
+  border-color: var(--blue);
+  background: #eaf3f8;
+}
+.contract-ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.contract-ai-copy {
+  flex: 1;
+  min-width: 240px;
+}
+.contract-ai-copy strong {
+  display: block;
+  font-size: 13px;
+  color: var(--blue);
+  margin-bottom: 3px;
+}
+.contract-ai-copy .hint {
+  margin: 0;
+}
+.contract-ai-drawer,
+.contract-ai-text-pane {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #dce8ef;
+}
+.contract-ai-text-pane textarea {
+  width: 100%;
+  margin-top: 0;
+  background: #ffffff;
+}
+.contract-ai-text-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.contract-ai-text-actions .hint {
+  margin: 0;
+}
+.ai-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.ai-inline-row select {
+  margin-top: 0;
+  flex: 1;
+}
+.ai-inline-row button {
+  flex: none;
+  padding: 9px 11px;
+  white-space: nowrap;
+}
+.ai-endpoint-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+}
+.ai-key-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ai-key-primary-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--blue);
+  text-decoration: none;
+}
+.ai-key-primary-link:hover {
+  text-decoration: underline;
+}
+.ai-key-chip {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid #d9e4ec;
+  background: #ffffff;
+}
+.ai-key-chip.active {
+  color: var(--blue);
+  border-color: #9ec3d8;
+  background: #edf5f9;
+  font-weight: 600;
+}
+.ai-key-chip:hover {
+  color: var(--blue);
+  border-color: var(--blue);
+}
+#ai-settings-panel code,
+.contract-ai-drawer code {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 11px;
+  background: #edf3f6;
+  padding: 1px 5px;
+  border-radius: 4px;
+}

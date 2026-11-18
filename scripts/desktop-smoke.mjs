@@ -530,6 +530,11 @@ try {
     .toBe(false);
   await page.getByRole("button", { name: "案件台账", exact: true }).click();
   await page.getByRole("button", { name: "＋ 新建案件", exact: true }).click();
+  await expect(page.locator("#contract-ai-pick")).toBeVisible();
+  await expect(page.locator("#contract-ai-text-toggle")).toBeVisible();
+  await page.locator("#contract-ai-text-toggle").click();
+  await expect(page.locator("#contract-ai-text")).toBeVisible();
+  await expect(page.locator("#contract-ai-parse-text")).toBeVisible();
   await page.locator("[name=client]").fill("未保存的输入");
   await page.evaluate(() => window.hengzhang.checkUpdates());
   await application.evaluate(({ BrowserWindow }) =>
@@ -552,6 +557,11 @@ try {
   );
   assert.equal((await request(page, "workspace")).cases.length, 4);
   await page.getByRole("button", { name: "设置与备份", exact: true }).click();
+  await expect(page.locator("#ai-settings-panel")).toBeVisible();
+  await page.locator("#ai-settings-panel [data-ai-primary-key-link]").click();
+  await expect
+    .poll(() => application.evaluate(() => globalThis.updateDownloadCalls))
+    .toContain("https://cloud.siliconflow.cn/account/ak");
   await page.screenshot({
     path: path.join(workspace, "软件更新.png"),
     fullPage: true,

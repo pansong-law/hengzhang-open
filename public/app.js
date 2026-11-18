@@ -734,10 +734,315 @@ function statsPanels() {
     '</section><p class="print-note">签约律师费按台账登记金额汇总；费用说明中的计算条件不会自动折算为应收金额。</p></section>'
   );
 }
+function aiKeyLinksHtml(providers, activeProviderId) {
+  return providers
+    .filter((p) => p.key_url)
+    .map(
+      (p) =>
+        '<a class="ai-key-chip' +
+        (p.id === activeProviderId ? " active" : "") +
+        '" href="' +
+        esc(p.key_url) +
+        '" target="_blank" rel="noopener noreferrer" data-ai-key-url="' +
+        esc(p.key_url) +
+        '">' +
+        esc(p.short_name || p.name) +
+        " ↗</a>",
+    )
+    .join("");
+}
+function aiConfigFormHtml(ai) {
+  const providers = ai?.providers || [],
+    currentProvider =
+      providers.find((p) => p.id === ai?.provider) || providers[0] || {},
+    models = currentProvider.models || [],
+    inPreset = models.some((m) => m.id === ai?.model);
+  return (
+    '<form class="ai-config-form"><div class="form-grid"><label>服务商 / 接入方案<select name="provider">' +
+    providers
+      .map(
+        (p) =>
+          '<option value="' +
+          esc(p.id) +
+          '"' +
+          (p.id === ai?.provider ? " selected" : "") +
+          ">" +
+          esc(p.name) +
+          "</option>",
+      )
+      .join("") +
+    '</select></label><label>接口协议<select name="protocol"><option value="openai"' +
+    (ai?.protocol !== "anthropic" ? " selected" : "") +
+    '>OpenAI 兼容（/chat/completions）</option><option value="anthropic"' +
+    (ai?.protocol === "anthropic" ? " selected" : "") +
+    '>Anthropic 兼容（/messages）</option></select></label><label class="full">API 接口地址（Base URL）<input name="base_url" value="' +
+    esc(ai?.base_url || currentProvider.base_url || "") +
+    '" placeholder="例如 https://api.siliconflow.cn/v1"><span class="ai-endpoint-chips" data-ai-endpoints>' +
+    (currentProvider.endpoints || [])
+      .map(
+        (ep) =>
+          '<button type="button" class="text-button" data-ai-endpoint="' +
+          esc(ep.url) +
+          '">填入：' +
+          esc(ep.label) +
+          "</button>",
+      )
+      .join("") +
+    '</span></label><label class="full"><span class="ai-key-head"><span>API Key</span><a class="ai-key-primary-link" data-ai-primary-key-link href="' +
+    esc(currentProvider.key_url || "#") +
+    '" target="_blank" rel="noopener noreferrer" data-ai-key-url="' +
+    esc(currentProvider.key_url || "") +
+    '"' +
+    (currentProvider.key_url ? "" : " hidden") +
+    ">" +
+    esc(currentProvider.key_label || "前往平台获取 API Key ↗") +
+    '</a></span><input type="password" name="api_key" autocomplete="off" placeholder="' +
+    esc(
+      ai?.has_api_key
+        ? "已保存在本机（" + ai.masked_api_key + "），不修改请留空"
+        : "粘贴对应平台的 API Key（仅保存在本机，不会随案件备份导出）",
+    ) +
+    '"><span class="ai-endpoint-chips" data-ai-key-links><span class="small muted">直达申请 Key：</span>' +
+    aiKeyLinksHtml(providers, currentProvider.id) +
+    '</span></label><label>推荐 / 免费模型选择<div class="ai-inline-row"><select data-ai-model-select>' +
+    models
+      .map(
+        (m) =>
+          '<option value="' +
+          esc(m.id) +
+          '"' +
+          (m.id === ai?.model ? " selected" : "") +
+          ">" +
+          esc(m.label) +
+          "</option>",
+      )
+      .join("") +
+    '<option value="__custom__"' +
+    (!inPreset ? " selected" : "") +
+    '>手动填写模型标识（Coding Plan / 其他模型）</option></select><button type="button" data-ai-fetch-models>刷新列表</button></div></label><label>实际调用模型标识（Model ID）<input name="model" value="' +
+    esc(ai?.model || currentProvider.default_model || "") +
+    '" placeholder="如 Qwen/Qwen3-8B 或 qwen3-coder-plus"></label></div><p class="form-error" role="alert" hidden></p><p class="hint" data-ai-feedback hidden></p><div class="page-actions">' +
+    (ai?.has_api_key
+      ? '<button type="button" data-ai-clear-key>清除已存密钥</button>'
+      : "") +
+    '<button type="button" data-ai-test>测试连接</button><button type="submit" class="primary">保存 AI 设置</button></div></form>'
+  );
+}
+function bindAiConfigForm(root, onSaved) {
+  const formEl = root.querySelector(".ai-config-form");
+  if (!formEl) return;
+  const providers = data.ai?.providers || [],
+    providerMap = Object.fromEntries(providers.map((p) => [p.id, p])),
+    providerSelect = formEl.elements.provider,
+    protocolSelect = formEl.elements.protocol,
+    baseUrlInput = formEl.elements.base_url,
+    apiKeyInput = formEl.elements.api_key,
+    modelInput = formEl.elements.model,
+    modelSelect = formEl.querySelector("[data-ai-model-select]"),
+    endpointsBox = formEl.querySelector("[data-ai-endpoints]"),
+    primaryKeyLink = formEl.querySelector("[data-ai-primary-key-link]"),
+    keyLinksBox = formEl.querySelector("[data-ai-key-links]"),
+    errorEl = formEl.querySelector(".form-error"),
+    feedbackEl = formEl.querySelector("[data-ai-feedback]");
+  const showFeedback = (msg, isError = false) => {
+    errorEl.hidden = !isError;
+    feedbackEl.hidden = isError;
+    if (isError) errorEl.textContent = msg;
+    else feedbackEl.textContent = msg;
+  };
+  const populateModelSelect = (list, activeModel) => {
+    const hasMatch = list.some((m) => m.id === activeModel);
+    modelSelect.innerHTML =
+      list
+        .map(
+          (m) =>
+            '<option value="' +
+            esc(m.id) +
+            '"' +
+            (m.id === activeModel ? " selected" : "") +
+            ">" +
+            esc(m.label || m.id) +
+            "</option>",
+        )
+        .join("") +
+      '<option value="__custom__"' +
+      (!hasMatch ? " selected" : "") +
+      ">手动填写模型标识（Coding Plan / 其他模型）</option>";
+  };
+  providerSelect.onchange = () => {
+    const p = providerMap[providerSelect.value];
+    if (!p) return;
+    protocolSelect.value = p.protocol || "openai";
+    if (p.base_url) baseUrlInput.value = p.base_url;
+    if (p.default_model) modelInput.value = p.default_model;
+    populateModelSelect(p.models || [], modelInput.value);
+    endpointsBox.innerHTML = (p.endpoints || [])
+      .map(
+        (ep) =>
+          '<button type="button" class="text-button" data-ai-endpoint="' +
+          esc(ep.url) +
+          '">填入：' +
+          esc(ep.label) +
+          "</button>",
+      )
+      .join("");
+    if (primaryKeyLink) {
+      if (p.key_url) {
+        primaryKeyLink.hidden = false;
+        primaryKeyLink.href = p.key_url;
+        primaryKeyLink.dataset.aiKeyUrl = p.key_url;
+        primaryKeyLink.textContent = p.key_label || "前往平台获取 API Key ↗";
+      } else {
+        primaryKeyLink.hidden = true;
+      }
+    }
+    if (keyLinksBox) {
+      keyLinksBox.innerHTML =
+        '<span class="small muted">直达申请 Key：</span>' +
+        aiKeyLinksHtml(providers, p.id);
+    }
+  };
+  modelSelect.onchange = () => {
+    if (modelSelect.value !== "__custom__")
+      modelInput.value = modelSelect.value;
+    else modelInput.focus();
+  };
+  formEl.addEventListener("click", async (e) => {
+    const keyLink = e.target.closest("[data-ai-key-url]");
+    if (keyLink) {
+      const url = keyLink.dataset.aiKeyUrl;
+      if (url && window.hengzhang?.openAiKeyUrl) {
+        e.preventDefault();
+        try {
+          await window.hengzhang.openAiKeyUrl(url);
+        } catch (err) {
+          showFeedback(err.message, true);
+        }
+      }
+      return;
+    }
+    const epBtn = e.target.closest("[data-ai-endpoint]");
+    if (epBtn) {
+      baseUrlInput.value = epBtn.dataset.aiEndpoint;
+      return;
+    }
+    const fetchBtn = e.target.closest("[data-ai-fetch-models]");
+    if (fetchBtn) {
+      fetchBtn.disabled = true;
+      showFeedback("正在从接口拉取可用模型列表…");
+      try {
+        const res = await api("ai/models", "POST", {
+          provider: providerSelect.value,
+          protocol: protocolSelect.value,
+          base_url: baseUrlInput.value,
+          api_key: apiKeyInput.value,
+          model: modelInput.value,
+        });
+        populateModelSelect(res.models || [], modelInput.value);
+        showFeedback(
+          "已更新模型列表（共 " +
+            (res.models?.length || 0) +
+            " 个模型，免费模型已置顶）",
+        );
+      } catch (err) {
+        showFeedback(err.message, true);
+      } finally {
+        fetchBtn.disabled = false;
+      }
+      return;
+    }
+    const testBtn = e.target.closest("[data-ai-test]");
+    if (testBtn) {
+      testBtn.disabled = true;
+      showFeedback("正在测试 AI 接口连接…");
+      try {
+        const res = await api("ai/test", "POST", {
+          provider: providerSelect.value,
+          protocol: protocolSelect.value,
+          base_url: baseUrlInput.value,
+          api_key: apiKeyInput.value,
+          model: modelInput.value,
+        });
+        showFeedback("连接成功（" + res.model + "）：" + res.reply);
+      } catch (err) {
+        showFeedback(err.message, true);
+      } finally {
+        testBtn.disabled = false;
+      }
+      return;
+    }
+    const clearBtn = e.target.closest("[data-ai-clear-key]");
+    if (clearBtn) {
+      clearBtn.disabled = true;
+      try {
+        const res = await api("ai/config", "PUT", {
+          provider: providerSelect.value,
+          protocol: protocolSelect.value,
+          base_url: baseUrlInput.value,
+          model: modelInput.value,
+          clear_api_key: true,
+        });
+        data.ai = res.ai;
+        notice("已清除本机保存的 API Key");
+        onSaved?.(res.ai);
+      } catch (err) {
+        showFeedback(err.message, true);
+      } finally {
+        clearBtn.disabled = false;
+      }
+    }
+  });
+  formEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submitBtn = formEl.querySelector("[type=submit]");
+    submitBtn.disabled = true;
+    errorEl.hidden = true;
+    try {
+      const res = await api("ai/config", "PUT", {
+        provider: providerSelect.value,
+        protocol: protocolSelect.value,
+        base_url: baseUrlInput.value,
+        api_key: apiKeyInput.value,
+        model: modelInput.value,
+      });
+      data.ai = res.ai;
+      apiKeyInput.value = "";
+      showFeedback("AI 设置已保存至本机");
+      notice("AI 合同识别设置已保存");
+      onSaved?.(res.ai);
+    } catch (err) {
+      showFeedback(err.message, true);
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const str = String(reader.result || ""),
+        idx = str.indexOf(",");
+      resolve(idx >= 0 ? str.slice(idx + 1) : str);
+    };
+    reader.onerror = () => reject(new Error("无法读取所选合同文件"));
+    reader.readAsDataURL(file);
+  });
+}
 function renderSettings() {
+  const ai = data.ai || {};
   $("#content").innerHTML =
     '<div class="page-heading"><div><h1>设置与备份</h1><p>保存一份完整备份，换电脑或需要时可以恢复。</p></div></div><section id="software-updates" class="panel">' +
     (window.HzUpdates?.panel() || "") +
+    '</section><section id="ai-settings-panel" class="panel"><div class="panel-head"><div><h2>AI 合同识别</h2><p class="hint">新建案件时可从委托/代理合同（PDF 或 Word）自动提取当事人、案由、律师费和期限。</p></div>' +
+    badge(
+      ai.has_api_key
+        ? (ai.model || "已就绪") + (ai.is_free_model ? " · 免费" : "")
+        : "待配置密钥",
+      ai.has_api_key ? "good" : "warn",
+    ) +
+    '</div><p class="hint">默认适配<strong>硅基流动（SiliconFlow）</strong>的多款免费模型（如 <code>Qwen/Qwen3-8B</code>、<code>Qwen/Qwen2.5-7B-Instruct</code>、<code>THUDM/GLM-4-9B-0414</code>、<code>DeepSeek-R1-0528-Qwen3-8B</code>）及智谱免费 <code>glm-4-flash</code>；也支持切换至 DeepSeek、阿里云百炼、智谱 GLM、火山方舟等付费 API 或 <strong>Coding Plan 专属接口</strong>。扫描版 PDF 会在本机离线完成 OCR 后再提取字段，API Key 仅保存在本机且不随案件备份导出。</p>' +
+    aiConfigFormHtml(ai) +
     '</section><section class="panel"><h2>工作台格言</h2><form id="motto-form"><label>自定义格言<input name="dashboard_motto" maxlength="60" value="' +
     esc(data.preferences.custom_motto) +
     '" placeholder="' + esc(data.preferences.default_motto) +
@@ -793,6 +1098,7 @@ function renderSettings() {
       button.disabled = false;
     }
   });
+  bindAiConfigForm($("#ai-settings-panel"), () => renderSettings());
 }
 async function editor(id = null, renew = false) {
   let c = id
@@ -986,6 +1292,270 @@ async function editor(id = null, renew = false) {
     el.elements.client.value = [...selected].join(",");
   };
   updateClients();
+  if (!renew) {
+    const box = document.createElement("section");
+    box.className = "contract-ai-box";
+    box.id = "contract-ai-box";
+    let pendingFile = null,
+      pendingText = "",
+      textDraft = "",
+      textPaneOpen = false;
+    const renderAiBar = () => {
+      const ai = data.ai || {},
+        ready =
+          ai.has_api_key ||
+          /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(\/|$)/i.test(
+            ai.base_url || "",
+          );
+      box.innerHTML =
+        '<div class="contract-ai-head"><div class="contract-ai-copy"><strong>从委托合同或案情文字智能识别填入</strong><p class="hint" id="contract-ai-status">支持文字版与扫描版 PDF、Word（.docx / .doc）合同拖入或选择，也可直接粘贴案情、当事人或收费文字提取填入，不保存合同原文件。</p></div><div class="page-actions">' +
+        badge(
+          ready
+            ? (ai.model || "AI 已就绪") + (ai.is_free_model ? " · 免费" : "")
+            : "待配置 API Key",
+          ready ? "good" : "warn",
+        ) +
+        '<button type="button" data-ai-toggle>AI 设置</button><button type="button" id="contract-ai-text-toggle">' +
+        (textPaneOpen ? "收起文字框" : "粘贴文字提取") +
+        '</button><button type="button" class="primary" id="contract-ai-pick">选择合同识别</button></div></div><div id="contract-ai-text-pane" class="contract-ai-text-pane"' +
+        (textPaneOpen ? "" : " hidden") +
+        '><textarea id="contract-ai-text" rows="3" placeholder="粘贴合同条款、客户微信/邮件发来的案情描述、当事人信息或收费约定文字（支持 Cmd+Enter 快捷提取）…">' +
+        esc(textDraft) +
+        '</textarea><div class="contract-ai-text-actions"><span class="hint">仅将上方文字发送至当前所选 AI 模型提取建档字段</span><div class="page-actions"><button type="button" data-ai-text-clear>清空</button><button type="button" class="primary" id="contract-ai-parse-text">提取文字填入</button></div></div></div><div id="contract-ai-drawer" class="contract-ai-drawer" hidden><p class="hint">默认预置<strong>硅基流动 SiliconFlow</strong> 免费模型（如 <code>Qwen/Qwen3-8B</code>），填入免费 API Key 即可使用；也可切换其他付费 API 或 Coding Plan 接口。</p>' +
+        aiConfigFormHtml(ai) +
+        '</div><input id="contract-ai-file" type="file" accept=".pdf,.docx,.doc,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword" hidden />';
+      const drawer = box.querySelector("#contract-ai-drawer"),
+        textPane = box.querySelector("#contract-ai-text-pane"),
+        textInput = box.querySelector("#contract-ai-text"),
+        textToggleBtn = box.querySelector("#contract-ai-text-toggle"),
+        parseTextBtn = box.querySelector("#contract-ai-parse-text"),
+        clearTextBtn = box.querySelector("[data-ai-text-clear]"),
+        statusEl = box.querySelector("#contract-ai-status"),
+        pickBtn = box.querySelector("#contract-ai-pick"),
+        fileInput = box.querySelector("#contract-ai-file"),
+        toggleBtn = box.querySelector("[data-ai-toggle]");
+      toggleBtn.onclick = () => {
+        drawer.hidden = !drawer.hidden;
+      };
+      textToggleBtn.onclick = () => {
+        textPaneOpen = !textPane.hidden ? false : true;
+        textPane.hidden = !textPaneOpen;
+        textToggleBtn.textContent = textPaneOpen
+          ? "收起文字框"
+          : "粘贴文字提取";
+        if (textPaneOpen) textInput.focus();
+      };
+      textInput.oninput = () => {
+        textDraft = textInput.value;
+      };
+      clearTextBtn.onclick = () => {
+        textDraft = "";
+        textInput.value = "";
+        textInput.focus();
+      };
+      bindAiConfigForm(drawer, async () => {
+        renderAiBar();
+        if (pendingFile) {
+          const f = pendingFile;
+          pendingFile = null;
+          await handleContractFile(f);
+        } else if (pendingText) {
+          const t = pendingText;
+          pendingText = "";
+          await handleContractText(t);
+        }
+      });
+      const applyExtracted = (extracted, docMeta) => {
+        let filled = 0;
+        if (
+          extracted.track &&
+          ["litigation", "advisory", "project"].includes(extracted.track)
+        ) {
+          el.elements.track.value = extracted.track;
+          updateTrack();
+        }
+        for (const key of [
+          "case_no",
+          "client",
+          "client_contact",
+          "plaintiff",
+          "defendant",
+          "third_party",
+          "case_type",
+          "name",
+          "opponent",
+          "service_start",
+          "service_end",
+          "lawyer",
+          "sign_date",
+          "fee_note",
+          "notes",
+        ]) {
+          if (extracted[key] && el.elements[key]) {
+            el.elements[key].value = extracted[key];
+            filled++;
+          }
+        }
+        if (Array.isArray(extracted.co_lawyers) && extracted.co_lawyers.length) {
+          el.elements.co_lawyers.value = extracted.co_lawyers.join("、");
+          filled++;
+        }
+        if (extracted.contract_amount != null) {
+          el.elements.contract_amount.value = extracted.contract_amount;
+          filled++;
+        }
+        if (el.elements.track.value === "litigation") {
+          if (extracted.case_stage) {
+            el.elements.case_stage.value = extracted.case_stage;
+            filled++;
+          }
+          if (Array.isArray(extracted.scope) && extracted.scope.length) {
+            const scopeSet = new Set(extracted.scope);
+            el.querySelectorAll('[name="scope"]').forEach((cb) => {
+              cb.checked = scopeSet.has(cb.value);
+            });
+            filled++;
+          }
+        }
+        updateClients();
+        const ocrNote = docMeta?.ocr_pages
+          ? "（含 " + docMeta.ocr_pages + " 页扫描件本机 OCR）"
+          : "";
+        const sourceLabel =
+          docMeta?.format === "text"
+            ? "粘贴文字"
+            : "《" + (docMeta?.filename || "合同") + "》";
+        statusEl.textContent =
+          "已从" +
+          sourceLabel +
+          ocrNote +
+          "识别填入 " +
+          filled +
+          " 项字段，请核对后保存。";
+        notice("智能识别完成，请核对回填信息");
+      };
+      const handleContractText = async (rawText) => {
+        const text = String(rawText ?? textInput.value ?? "").trim();
+        textDraft = textInput.value;
+        if (text.length < 6) {
+          statusEl.textContent = "请先粘贴至少 6 个字的合同条款或案情描述文字。";
+          textPaneOpen = true;
+          textPane.hidden = false;
+          textToggleBtn.textContent = "收起文字框";
+          textInput.focus();
+          return;
+        }
+        const nowReady =
+          data.ai?.has_api_key ||
+          /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(\/|$)/i.test(
+            data.ai?.base_url || "",
+          );
+        if (!nowReady) {
+          pendingText = text;
+          drawer.hidden = false;
+          statusEl.textContent =
+            "已暂存待提取文字，请先在下方填写 API Key 并点击“保存 AI 设置”，保存后将自动开始提取。";
+          drawer.querySelector('[name="api_key"]')?.focus();
+          return;
+        }
+        parseTextBtn.disabled = true;
+        pickBtn.disabled = true;
+        parseTextBtn.textContent = "正在提取…";
+        statusEl.textContent = "正在从粘贴文字中提取案件信息，请稍候…";
+        try {
+          const result = await api("cases/extract-contract", "POST", { text });
+          applyExtracted(result.extracted, result.document);
+        } catch (error) {
+          statusEl.textContent = "提取未完成：" + error.message;
+          notice(error.message);
+        } finally {
+          parseTextBtn.disabled = false;
+          pickBtn.disabled = false;
+          parseTextBtn.textContent = "提取文字填入";
+        }
+      };
+      parseTextBtn.onclick = () => handleContractText();
+      textInput.onkeydown = (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+          e.preventDefault();
+          handleContractText();
+        }
+      };
+      const handleContractFile = async (file) => {
+        if (!file) return;
+        const nowReady =
+          data.ai?.has_api_key ||
+          /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(\/|$)/i.test(
+            data.ai?.base_url || "",
+          );
+        if (!nowReady) {
+          pendingFile = file;
+          drawer.hidden = false;
+          statusEl.textContent =
+            "已选择《" +
+            file.name +
+            "》，请先在下方填写 API Key 并点击“保存 AI 设置”，保存后将自动开始识别。";
+          drawer.querySelector('[name="api_key"]')?.focus();
+          return;
+        }
+        pickBtn.disabled = true;
+        parseTextBtn.disabled = true;
+        pickBtn.textContent = "正在识别…";
+        statusEl.textContent =
+          "正在读取《" +
+          file.name +
+          "》并提取案件信息（扫描件将自动执行本机 OCR），请稍候…";
+        try {
+          const data_base64 = await fileToBase64(file);
+          const result = await api("cases/extract-contract", "POST", {
+            filename: file.name,
+            data_base64,
+          });
+          applyExtracted(result.extracted, result.document);
+        } catch (error) {
+          statusEl.textContent = "识别未完成：" + error.message;
+          notice(error.message);
+        } finally {
+          pickBtn.disabled = false;
+          parseTextBtn.disabled = false;
+          pickBtn.textContent = "选择合同识别";
+        }
+      };
+      pickBtn.onclick = () => {
+        const nowReady =
+          data.ai?.has_api_key ||
+          /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(\/|$)/i.test(
+            data.ai?.base_url || "",
+          );
+        if (!nowReady) {
+          drawer.hidden = false;
+          statusEl.textContent =
+            "请先填写 API Key（默认已选硅基流动免费模型 Qwen/Qwen3-8B）并保存设置，即可识别合同。";
+          drawer.querySelector('[name="api_key"]')?.focus();
+          return;
+        }
+        fileInput.click();
+      };
+      fileInput.onchange = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (file) await handleContractFile(file);
+      };
+      box.ondragover = (e) => {
+        e.preventDefault();
+        box.classList.add("drag-over");
+      };
+      box.ondragleave = () => box.classList.remove("drag-over");
+      box.ondrop = async (e) => {
+        e.preventDefault();
+        box.classList.remove("drag-over");
+        const file = e.dataTransfer?.files?.[0];
+        if (file) await handleContractFile(file);
+      };
+    };
+    renderAiBar();
+    $("#modal-body").prepend(box);
+  }
 }
 async function openDetail(id) {
   const c = (await api("cases/" + id)).case;

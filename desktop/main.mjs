@@ -12,7 +12,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLocalApp } from "../server.js";
 import { readBackup } from "../lib/store.js";
+import { AI_PROVIDERS } from "../lib/ai-contract.js";
 import { ReleaseUpdates } from "./updates.mjs";
+const ALLOWED_AI_KEY_URLS = new Set(
+  Object.values(AI_PROVIDERS)
+    .map((p) => p.key_url)
+    .filter(Boolean),
+);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const dataDir =
   process.env.HZ_DATA_DIR ||
@@ -180,11 +186,18 @@ else {
     }
     try {
       try {
-        backend = createLocalApp({ dataDir });
+        backend = createLocalApp({
+          dataDir,
+          aiFetch: (url, options) => net.fetch(url, options),
+        });
       } catch (error) {
         if (!(await recoverStartup(error))) {
           app.quit();
-        } else backend = createLocalApp({ dataDir });
+        } else
+          backend = createLocalApp({
+            dataDir,
+            aiFetch: (url, options) => net.fetch(url, options),
+          });
       }
       if (backend) {
         origin = await backend.start();
@@ -253,6 +266,14 @@ else {
           )
             throw Error("无效窗口");
           await shell.openExternal("https://aifalv.vip/");
+          return true;
+        });
+        ipcMain.handle("hengzhang:open-ai-key-url", async (event, url) => {
+          trusted(event);
+          const target = String(url || "").trim();
+          if (!ALLOWED_AI_KEY_URLS.has(target))
+            throw Error("不支持的外部平台链接");
+          await shell.openExternal(target);
           return true;
         });
         ipcMain.handle("hengzhang:reveal-data", async (event) => {

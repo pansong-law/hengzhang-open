@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     revealData: () => ipcRenderer.invoke("hengzhang:reveal-data"),
     openHomepage: () => ipcRenderer.invoke("hengzhang:open-homepage"),
+    openAiKeyUrl: (url) =>
+      ipcRenderer.invoke("hengzhang:open-ai-key-url", url),
     updateStatus: () => ipcRenderer.invoke("hengzhang:updates:status"),
     checkUpdates: () => ipcRenderer.invoke("hengzhang:updates:check"),
     setAutomaticUpdates: (value) =>
