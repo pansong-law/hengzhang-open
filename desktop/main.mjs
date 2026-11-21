@@ -276,6 +276,13 @@ else {
           await shell.openExternal(target);
           return true;
         });
+        ipcMain.handle("hengzhang:open-quick-link", async (event, url) => {
+          trusted(event);
+          const safeUrl = backend.hasQuickLinkUrl(url);
+          if (!safeUrl) throw Error("该网址未保存在本地常用网址列表中");
+          await shell.openExternal(safeUrl);
+          return true;
+        });
         ipcMain.handle("hengzhang:reveal-data", async (event) => {
           if (
             event.sender !== window?.webContents ||

@@ -573,6 +573,30 @@ try {
   await expect
     .poll(() => application.evaluate(() => globalThis.updateDownloadCalls))
     .toContain("https://cloud.siliconflow.cn/account/ak");
+  // Verify in-app Quick Links panel: 6 public presets, add custom URL, drag reorder, and openExternal
+  await page.locator("#quick-links-trigger").click();
+  await expect(page.locator("#quick-links-backdrop")).toBeVisible();
+  await expect(page.locator(".ql-card")).toHaveCount(6);
+  await page.locator("#ql-open-add").click();
+  await page.locator("#ql-form-title").fill("桌面测试常用网");
+  await page.locator("#ql-form-url").fill("https://law.example.org/");
+  await page.locator("#ql-form-submit").click();
+  await expect(page.locator(".ql-card")).toHaveCount(7);
+  const qlBox0 = await page.locator(".ql-card").nth(0).boundingBox();
+  const qlBox2 = await page.locator(".ql-card").nth(2).boundingBox();
+  const qlId2 = await page.locator(".ql-card").nth(2).getAttribute("data-ql-id");
+  await page.mouse.move(qlBox2.x + qlBox2.width / 2, qlBox2.y + qlBox2.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(qlBox2.x + qlBox2.width / 2 - 20, qlBox2.y + qlBox2.height / 2 - 20, { steps: 4 });
+  await page.mouse.move(qlBox0.x + qlBox0.width / 2, qlBox0.y + qlBox0.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await expect(page.locator(".ql-card").nth(0)).toHaveAttribute("data-ql-id", qlId2);
+  await expect(page.locator("#ql-reset-order")).toBeVisible();
+  await page.locator(".ql-card").nth(0).click();
+  await expect(page.locator("#quick-links-backdrop")).not.toBeVisible();
+  await expect
+    .poll(() => application.evaluate(() => globalThis.updateDownloadCalls))
+    .toContain("https://rmfyalk.court.gov.cn/");
   await page.screenshot({
     path: path.join(workspace, "软件更新.png"),
     fullPage: true,

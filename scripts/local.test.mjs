@@ -1446,3 +1446,93 @@ test("lawyer fee allocation supports percentage and fixed splits, idempotency, b
     await s.close();
   }
 });
+
+test("in-app quick links ship 6 public presets only, support drag sorting, custom URLs, and survive backup/restore", async () => {
+  const s = await fixture();
+  try {
+    const initial = await s.request("quick-links");
+    assert.equal(initial.status, 200);
+    assert.equal(initial.items.length, 6);
+    const urls = initial.items.map((x) => x.url).join(" ");
+    for (const forbidden of [
+      "dachenglaw.com",
+      "222.212.88.95",
+      "10.1.6.20",
+      "ready2021.top",
+    ]) {
+      assert.equal(urls.includes(forbidden), false, `private URL leaked: ${forbidden}`);
+    }
+
+    // Reject unsafe URLs
+    assert.equal(
+      (
+        await s.request("quick-links", "POST", {
+          action: "save_link",
+          title: "恶意脚本",
+          url: "javascript:alert(1)",
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await s.request("quick-links", "POST", {
+          action: "save_link",
+          title: "含密码链接",
+          url: "https://user:pass@example.com/",
+        })
+      ).status,
+      400,
+    );
+
+    // Add custom site, reorder via drag payload, verify hasQuickLinkUrl guard
+    const added = await s.request("quick-links", "POST", {
+      action: "save_link",
+      title: "本地法院服务",
+      url: "court.example.org",
+      category: "诉讼审判",
+      desc: "自定义法院入口",
+    });
+    assert.equal(added.status, 200);
+    assert.equal(added.items.length, 7);
+    const custom = added.items.find((x) => x.title === "本地法院服务");
+    assert.equal(custom.url, "https://court.example.org");
+    assert.equal(s.app.hasQuickLinkUrl("https://court.example.org"), "https://court.example.org");
+    assert.equal(s.app.hasQuickLinkUrl("https://unregistered.example.com/"), null);
+
+    const reordered = await s.request("quick-links", "POST", {
+      action: "reorder_links",
+      order_ids: [custom.id, "preset-feishu", "preset-court-online"],
+      pinned_ids: [custom.id],
+    });
+    assert.equal(reordered.status, 200);
+    assert.equal(reordered.has_custom_order, true);
+    assert.deepEqual(
+      reordered.items.slice(0, 3).map((x) => x.id),
+      [custom.id, "preset-feishu", "preset-court-online"],
+    );
+
+    // Export backup, reset defaults, then restore backup and confirm quick_links survive intact
+    const exported = await s.request("backups/export");
+    delete exported.status;
+    await s.request("quick-links", "POST", { action: "reset_defaults" });
+    await s.request("quick-links", "POST", { action: "reset_order" });
+    const afterReset = await s.request("quick-links");
+    assert.equal(afterReset.items.length, 6);
+    assert.equal(afterReset.has_custom_order, false);
+
+    const preview = await s.request("backups/preview", "POST", { backup: exported });
+    const restored = await s.request("backups/restore", "POST", {
+      backup: exported,
+      confirm: preview.checksum,
+      current_checksum: preview.current_checksum,
+    });
+    assert.equal(restored.status, 200);
+    const afterRestore = await s.request("quick-links");
+    assert.equal(afterRestore.items.length, 7);
+    assert.equal(afterRestore.has_custom_order, true);
+    assert.equal(afterRestore.items[0].id, custom.id);
+  } finally {
+    await s.close();
+  }
+});

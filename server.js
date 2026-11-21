@@ -33,6 +33,11 @@ import { planCaseImport } from "./lib/case-import.js";
 import { advisoryRenewalDraft, renewalPeriod } from "./lib/advisory-renewal.js";
 import { mottoPreferences } from "./lib/daily-motto.js";
 import {
+  getQuickLinksPayload,
+  mutateQuickLinks,
+  hasQuickLinkUrl,
+} from "./lib/quick-links.js";
+import {
   extractContractText,
   MAX_CONTRACT_CHARS,
 } from "./lib/contract-reader.js";
@@ -363,6 +368,17 @@ export function createLocalApp({
         }
         if (p === "/api/preferences" && method === "GET")
           return json(res, 200, { preferences: mottoPreferences(db) });
+        if (p === "/api/quick-links" && method === "GET")
+          return json(res, 200, getQuickLinksPayload(store.db.meta));
+        if (p === "/api/quick-links" && method === "POST") {
+          const input = await body(req);
+          const payload = store.update((d) => {
+            const result = mutateQuickLinks(d.meta, input);
+            d.meta.quick_links = result.value;
+            return result.payload;
+          });
+          return json(res, 200, payload);
+        }
         if (p === "/api/preferences" && method === "PUT") {
           const input = await body(req);
           if (
@@ -737,6 +753,9 @@ export function createLocalApp({
   return {
     store,
     server,
+    hasQuickLinkUrl(rawUrl) {
+      return hasQuickLinkUrl(store.db.meta, rawUrl);
+    },
     async start(port = 0) {
       await new Promise((resolve, reject) => {
         server.once("error", reject);

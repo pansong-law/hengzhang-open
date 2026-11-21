@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld(
     openHomepage: () => ipcRenderer.invoke("hengzhang:open-homepage"),
     openAiKeyUrl: (url) =>
       ipcRenderer.invoke("hengzhang:open-ai-key-url", url),
+    openQuickLink: (url) =>
+      ipcRenderer.invoke("hengzhang:open-quick-link", url),
     updateStatus: () => ipcRenderer.invoke("hengzhang:updates:status"),
     checkUpdates: () => ipcRenderer.invoke("hengzhang:updates:check"),
     setAutomaticUpdates: (value) =>
