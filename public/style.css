@@ -648,6 +648,40 @@ input[readonly] {
 .party-choices .check-group {
   margin: 7px 0 0;
 }
+.fa-check-list {
+  max-height: 190px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 12px;
+  background: #fafcfd;
+}
+.fa-confirm-check {
+  font-weight: 400;
+  font-size: 12px;
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+.fa-confirm-check:last-child {
+  margin-bottom: 0;
+}
+.fa-confirm-check input {
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.fa-recipient-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+.fa-recipient-row label {
+  margin-bottom: 0;
+}
 .detail-title {
   display: flex;
   gap: 10px;

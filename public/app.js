@@ -474,7 +474,7 @@ function filteredCases() {
 }
 function renderCases() {
   $("#content").innerHTML =
-    '<div class="page-heading"><div><h1>案件台账</h1><p>客户、案件进展与律师费，放在一起查看。</p></div><div class="page-actions"><button data-action="import">导入台账</button><button data-action="export">导出当前筛选</button><button class="primary" data-action="new">＋ 新建案件</button></div></div>' +
+    '<div class="page-heading"><div><h1>案件台账</h1><p>客户、案件进展与律师费，放在一起查看。</p></div><div class="page-actions"><button data-action="import">导入台账</button><button data-action="export">导出当前筛选</button><button data-action="fee-allocation">分配律师费</button><button data-action="fee-history">分配记录</button><button class="primary" data-action="new">＋ 新建案件</button></div></div>' +
     '<div class="tabs">' +
     [["", "全部"], ...Object.entries(data.tracks)]
       .map(
@@ -731,8 +731,497 @@ function statsPanels() {
           )
           .join("")
       : '<p class="muted small">录入案件后在此查看。</p>') +
-    '</section><p class="print-note">签约律师费按台账登记金额汇总；费用说明中的计算条件不会自动折算为应收金额。</p></section>'
+    "</section>" +
+    lawyerFeeStatsHtml() +
+    '<p class="print-note">签约律师费按台账登记金额汇总；费用说明中的计算条件不会自动折算为应收金额。</p></section>'
   );
+}
+function knownLawyers() {
+  const set = new Set();
+  for (const c of data?.cases || []) {
+    if (c.lawyer) set.add(c.lawyer);
+    for (const co of c.co_lawyers || []) if (co) set.add(co);
+  }
+  for (const row of data?.fee_allocations?.by_lawyer || []) {
+    if (row.lawyer) set.add(row.lawyer);
+  }
+  return [...set].sort((a, b) => a.localeCompare(b, "zh-CN"));
+}
+function lawyerFeeStatsHtml() {
+  const summary = data?.fee_allocations || { total: 0, by_lawyer: [] };
+  const groups = new Map();
+  const get = (name) => {
+    if (!groups.has(name))
+      groups.set(name, {
+        n: 0,
+        signed: 0,
+        received: 0,
+        unpaid: 0,
+        invUnpaid: 0,
+        allocated: 0,
+      });
+    return groups.get(name);
+  };
+  for (const c of data?.cases || []) {
+    const row = get(c.lawyer || "（未分配）"),
+      fs = c.fee_summary || {};
+    row.n++;
+    row.signed = Math.round((row.signed + Number(fs.signed || 0)) * 100) / 100;
+    row.received =
+      Math.round((row.received + Number(fs.received || 0)) * 100) / 100;
+    row.unpaid = Math.round((row.unpaid + Number(fs.unpaid || 0)) * 100) / 100;
+    row.invUnpaid =
+      Math.round((row.invUnpaid + Number(fs.invoiced_unpaid || 0)) * 100) / 100;
+  }
+  for (const row of summary.by_lawyer || []) {
+    get(row.lawyer).allocated = Number(row.allocated || 0);
+  }
+  const rows = [...groups].sort(
+    (a, b) =>
+      b[1].signed - a[1].signed ||
+      b[1].allocated - a[1].allocated ||
+      a[0].localeCompare(b[0], "zh-CN"),
+  );
+  const total = (key) =>
+    Math.round(rows.reduce((sum, [, row]) => sum + row[key], 0) * 100) / 100;
+  return (
+    '<section class="panel" id="lawyer-fee-stats"><div class="panel-head"><div><h2>承办律师费用统计</h2><p class="hint">案件费用按承办归属，分配律师费按实际获得分配的律师归属；分配不改变案件已收金额。</p></div><div class="page-actions"><button data-action="fee-allocation">分配律师费</button><button data-action="fee-history">分配记录</button></div></div>' +
+    (rows.length
+      ? '<div class="table-wrap"><table><thead><tr><th>律师</th><th>承办案件数</th><th>签约律师费</th><th>已收律师费</th><th>未付金额</th><th>开票未付金额</th><th>分配律师费</th></tr></thead><tbody>' +
+        rows
+          .map(
+            ([name, row]) =>
+              "<tr><td>" +
+              (row.n && name !== "（未分配）"
+                ? '<button class="case-open" data-action="filter-lawyer" data-lawyer="' +
+                  esc(name) +
+                  '"><strong>' +
+                  esc(name) +
+                  "</strong></button>"
+                : "<strong>" + esc(name) + "</strong>") +
+              '</td><td class="num">' +
+              row.n +
+              '</td><td class="num">' +
+              money(row.signed) +
+              '</td><td class="num">' +
+              money(row.received) +
+              '</td><td class="num">' +
+              money(row.unpaid) +
+              '</td><td class="num">' +
+              money(row.invUnpaid) +
+              '</td><td class="num">' +
+              (row.allocated
+                ? '<button class="text-button" data-action="fee-history" data-lawyer="' +
+                  esc(name) +
+                  '">' +
+                  money(row.allocated) +
+                  "</button>"
+                : money(0)) +
+              "</td></tr>",
+          )
+          .join("") +
+        '<tr><td><strong>合计</strong></td><td class="num"><strong>' +
+        rows.reduce((sum, [, r]) => sum + r.n, 0) +
+        "</strong></td>" +
+        ["signed", "received", "unpaid", "invUnpaid", "allocated"]
+          .map(
+            (key) =>
+              '<td class="num"><strong>' + money(total(key)) + "</strong></td>",
+          )
+          .join("") +
+        "</tr></tbody></table></div>"
+      : '<p class="muted small">录入案件或分配律师费后在此查看按律师汇总统计。</p>') +
+    "</section>"
+  );
+}
+async function openFeeAllocation(preselectId = "") {
+  const allocData = await api("fee-allocations");
+  const lawyers = knownLawyers();
+  openModal(
+    "分配律师费",
+    '<p class="hint">选择一个或多个案件。基数默认采用各案最近一笔到账金额，也可在首次分配前填写。相同规则分别用于每个选中案件；比例按基数计算，固定金额为每案金额。同一基数可分多次，累计不超过基数。</p>' +
+      '<form id="fa-form"><label>搜索并选择案件<input id="fa-search" placeholder="搜索案件名称、客户或案号…"></label><div class="page-actions" style="margin-bottom:10px"><button type="button" id="fa-select-all">选中搜索结果</button><button type="button" id="fa-clear">清空选择</button><span id="fa-count" class="muted small">已选 0 个案件</span></div>' +
+      '<div class="fa-check-list" id="fa-case-options">' +
+      (allocData.cases.length
+        ? allocData.cases
+            .map(
+              (c) =>
+                '<label class="fa-confirm-check" data-fa-option="' +
+                esc(c.id) +
+                '"><input type="checkbox" value="' +
+                esc(c.id) +
+                '"><span><strong>' +
+                esc(c.name) +
+                '</strong> <span class="muted small">' +
+                esc(c.code ? c.code + " · " : "") +
+                (c.latest_receipt
+                  ? "最近到账 " +
+                    money(c.latest_receipt.amount) +
+                    "（" +
+                    esc(c.latest_receipt.date) +
+                    "）"
+                  : "无到账流水，可手填基数") +
+                "</span></span></label>",
+            )
+            .join("")
+        : '<p class="muted small" style="margin:8px">暂无可分配案件，请先新建案件。</p>') +
+      '</div><div id="fa-case-bases" style="margin-top:14px"></div>' +
+      '<div class="form-section"><h3>分配给律师</h3></div><datalist id="fa-lawyers">' +
+      lawyers.map((name) => '<option value="' + esc(name) + '">').join("") +
+      '</datalist><div id="fa-recipients"></div><div style="margin-bottom:14px"><button type="button" id="fa-add-recipient">＋ 添加律师</button></div>' +
+      '<label>备注<input name="note" placeholder="选填，如：2026年第一笔顾问费提成"></label><div id="fa-preview"></div><p class="form-error" role="alert" hidden></p><div class="form-actions"><button type="button" data-action="close-modal">取消</button><button class="primary" type="submit">预览分配</button></div></form>',
+  );
+  const formEl = $("#fa-form"),
+    selected = new Map(),
+    recipients = $("#fa-recipients"),
+    basesEl = $("#fa-case-bases"),
+    previewEl = $("#fa-preview"),
+    errorEl = formEl.querySelector(".form-error"),
+    submitBtn = formEl.querySelector("button[type=submit]");
+  let previewKey = null;
+  const requestId = crypto.randomUUID();
+  const invalidate = () => {
+    previewKey = null;
+    previewEl.innerHTML = "";
+    submitBtn.textContent = "预览分配";
+  };
+  const renderBases = () => {
+    $("#fa-count").textContent = "已选 " + selected.size + " 个案件";
+    basesEl.innerHTML = selected.size
+      ? '<div class="table-wrap" style="max-height:240px"><table><thead><tr><th>案件名称</th><th>到账／分配基数</th><th>基数金额（元）</th><th>已分配</th><th>剩余可分</th></tr></thead><tbody>' +
+        [...selected]
+          .map(([id, item]) => {
+            const c = allocData.cases.find((x) => x.id === id),
+              basis = c.bases.find((b) => b.id === item.basis_id);
+            return (
+              "<tr><td><strong>" +
+              esc(c.name) +
+              '</strong><span class="sub">' +
+              esc(c.code) +
+              '</span></td><td><select data-fa-basis="' +
+              esc(id) +
+              '">' +
+              c.bases
+                .map(
+                  (b) =>
+                    '<option value="' +
+                    esc(b.id) +
+                    '"' +
+                    (item.basis_id === b.id ? " selected" : "") +
+                    ">" +
+                    esc(
+                      b.receipt_id
+                        ? [
+                            b.period,
+                            b.date,
+                            "到账 " + money(b.source_amount),
+                          ]
+                            .filter(Boolean)
+                            .join(" ")
+                        : "手填基数",
+                    ) +
+                    "</option>",
+                )
+                .join("") +
+              '</select></td><td><input data-fa-base="' +
+              esc(id) +
+              '" type="number" min="0.01" step="0.01" required value="' +
+              esc(item.base_amount ?? "") +
+              '"' +
+              (basis.locked ? " readonly" : "") +
+              ' style="min-width:110px;margin-top:0"></td><td class="num">' +
+              money(basis.allocated) +
+              '</td><td class="num" data-fa-remaining="' +
+              esc(id) +
+              '">' +
+              (item.base_amount
+                ? money(
+                    Math.round(
+                      (Number(item.base_amount) - Number(basis.allocated || 0)) *
+                        100,
+                    ) / 100,
+                  )
+                : "—") +
+              "</td></tr>"
+            );
+          })
+          .join("") +
+        "</tbody></table></div>"
+      : "";
+    basesEl.querySelectorAll("[data-fa-basis]").forEach(
+      (sel) =>
+        (sel.onchange = () => {
+          const c = allocData.cases.find((x) => x.id === sel.dataset.faBasis),
+            basis = c.bases.find((b) => b.id === sel.value);
+          selected.set(c.id, {
+            case_id: c.id,
+            basis_id: basis.id,
+            base_amount: basis.amount,
+          });
+          renderBases();
+          invalidate();
+        }),
+    );
+    basesEl.querySelectorAll("[data-fa-base]").forEach(
+      (inp) =>
+        (inp.oninput = () => {
+          const item = selected.get(inp.dataset.faBase),
+            c = allocData.cases.find((x) => x.id === item.case_id),
+            basis = c.bases.find((b) => b.id === item.basis_id);
+          item.base_amount = inp.value;
+          const remEl = [
+            ...basesEl.querySelectorAll("[data-fa-remaining]"),
+          ].find((el) => el.dataset.faRemaining === c.id);
+          if (remEl)
+            remEl.textContent = inp.value
+              ? money(
+                  Math.round(
+                    (Number(inp.value) - Number(basis.allocated || 0)) * 100,
+                  ) / 100,
+                )
+              : "—";
+        }),
+    );
+  };
+  const selectCase = (id, on) => {
+    const c = allocData.cases.find((x) => x.id === id);
+    if (!c) return;
+    if (on) {
+      const basis = c.bases.find((b) => b.id === c.default_basis);
+      selected.set(id, {
+        case_id: id,
+        basis_id: basis.id,
+        base_amount: basis.amount,
+      });
+    } else selected.delete(id);
+  };
+  $("#fa-case-options")
+    .querySelectorAll("input")
+    .forEach(
+      (inp) =>
+        (inp.onchange = () => {
+          selectCase(inp.value, inp.checked);
+          renderBases();
+          invalidate();
+        }),
+    );
+  if (preselectId) {
+    const cb = [...$("#fa-case-options").querySelectorAll("input")].find(
+      (inp) => inp.value === preselectId,
+    );
+    if (cb) {
+      cb.checked = true;
+      selectCase(preselectId, true);
+      renderBases();
+    }
+  }
+  $("#fa-search").oninput = () => {
+    const q = $("#fa-search").value.toLowerCase().trim();
+    $("#fa-case-options")
+      .querySelectorAll("[data-fa-option]")
+      .forEach((label) => {
+        const c = allocData.cases.find((x) => x.id === label.dataset.faOption);
+        label.hidden = ![c.name, c.client, c.code]
+          .join(" ")
+          .toLowerCase()
+          .includes(q);
+      });
+  };
+  $("#fa-select-all").onclick = () => {
+    $("#fa-case-options")
+      .querySelectorAll("label:not([hidden]) input")
+      .forEach((inp) => {
+        if (!inp.checked) {
+          inp.checked = true;
+          selectCase(inp.value, true);
+        }
+      });
+    renderBases();
+    invalidate();
+  };
+  $("#fa-clear").onclick = () => {
+    selected.clear();
+    $("#fa-case-options")
+      .querySelectorAll("input")
+      .forEach((inp) => (inp.checked = false));
+    renderBases();
+    invalidate();
+  };
+  const addRecipient = (defaultName = "") => {
+    const row = document.createElement("div");
+    row.className = "fa-recipient-row";
+    row.innerHTML =
+      '<label>律师姓名<input data-fa-name list="fa-lawyers" required maxlength="40" value="' +
+      esc(defaultName) +
+      '" placeholder="选择或填写律师姓名"></label><label>方式<select data-fa-kind><option value="rate">比例（%）</option><option value="amount">金额（元／案）</option></select></label><label>比例／金额<input data-fa-value type="number" required min="0.01" step="0.01" max="100"></label><button type="button" title="移除此律师">×</button>';
+    row.querySelector("button").onclick = () => {
+      row.remove();
+      invalidate();
+    };
+    row.querySelector("select").onchange = () => {
+      const inp = row.querySelector("[data-fa-value]");
+      if (row.querySelector("select").value === "rate") inp.max = "100";
+      else inp.removeAttribute("max");
+      invalidate();
+    };
+    recipients.append(row);
+    invalidate();
+  };
+  $("#fa-add-recipient").onclick = () => addRecipient();
+  addRecipient();
+  formEl.addEventListener("input", (ev) => {
+    if (ev.target.id !== "fa-search") invalidate();
+  });
+  formEl.addEventListener("change", (ev) => {
+    if (ev.target.id !== "fa-search") invalidate();
+  });
+  formEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    errorEl.hidden = true;
+    try {
+      const payload = {
+        request_id: requestId,
+        cases: [...selected.values()],
+        recipients: [...recipients.children].map((row) => ({
+          name: row.querySelector("[data-fa-name]").value.trim(),
+          kind: row.querySelector("[data-fa-kind]").value,
+          value: row.querySelector("[data-fa-value]").value,
+        })),
+        note: formEl.elements.note.value,
+      };
+      const key = JSON.stringify(payload);
+      if (previewKey !== key) {
+        const result = await api("fee-allocations/preview", "POST", payload);
+        previewEl.innerHTML =
+          '<div class="form-section"><h3>本次分配预览</h3></div><div class="table-wrap" style="max-height:220px;margin-bottom:10px"><table><thead><tr><th>案件</th><th>律师</th><th>基数</th><th>方式</th><th>分配金额</th></tr></thead><tbody>' +
+          result.plans
+            .map((plan) =>
+              plan.splits
+                .map(
+                  (split) =>
+                    "<tr><td>" +
+                    esc(plan.case_name) +
+                    "</td><td>" +
+                    esc(split.name) +
+                    '</td><td class="num">' +
+                    money(plan.base_amount) +
+                    "</td><td>" +
+                    esc(
+                      split.kind === "rate"
+                        ? split.value + "%"
+                        : money(split.value),
+                    ) +
+                    '</td><td class="num"><strong>' +
+                    money(split.amount) +
+                    "</strong></td></tr>",
+                )
+                .join(""),
+            )
+            .join("") +
+          '</tbody></table></div><p><strong>合计分配 ' +
+          money(result.total) +
+          "，共 " +
+          result.cases +
+          " 个案件。确认无误后请点击“保存分配”。</strong></p>";
+        previewKey = key;
+        submitBtn.textContent = "保存分配";
+        return;
+      }
+      const result = await api("fee-allocations", "POST", payload);
+      closeModal();
+      await refresh();
+      notice(
+        result.unchanged
+          ? "该批次已保存，未重复分配"
+          : "律师费已分配，共 " +
+              result.cases +
+              " 个案件，合计 " +
+              money(result.total),
+      );
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.hidden = false;
+      errorEl.scrollIntoView({ block: "nearest" });
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+}
+async function openFeeAllocationHistory(filterName = "") {
+  const allocData = await api("fee-allocations");
+  let records = (allocData.records || []).slice().reverse();
+  if (filterName)
+    records = records.filter((row) => row.recipient === filterName);
+  openModal(
+    "律师费分配记录" + (filterName ? " · " + filterName : ""),
+    '<label>搜索案件、案号或律师<input id="fa-history-search" placeholder="输入关键词筛选分配记录…"></label>' +
+      (records.length
+        ? '<div class="table-wrap" style="max-height:420px"><table><thead><tr><th>案件</th><th>到账／基数</th><th>获得分配的律师</th><th>方式</th><th>分配金额</th><th>登记时间</th><th>状态</th></tr></thead><tbody>' +
+          records
+            .map(
+              (row) =>
+                '<tr data-fa-history="' +
+                esc(row.id) +
+                '"><td><strong>' +
+                esc(row.case_name) +
+                '</strong><span class="sub">' +
+                esc(row.case_code) +
+                (row.note ? " · " + esc(row.note) : "") +
+                "</span></td><td>" +
+                esc(row.source_period || row.source_date || "手填基数") +
+                '<span class="sub">基数 ' +
+                money(row.base_amount) +
+                "</span></td><td><strong>" +
+                esc(row.recipient) +
+                "</strong></td><td>" +
+                esc(row.kind === "rate" ? row.value + "%" : "固定金额") +
+                '</td><td class="num"><strong>' +
+                money(row.amount) +
+                '</strong></td><td><span class="small muted">' +
+                time(row.at) +
+                "</span></td><td>" +
+                (row.voided_at
+                  ? '<span class="muted small">已撤销：' +
+                    esc(row.void_reason) +
+                    "</span>"
+                  : '<button type="button" class="text-button danger" data-fa-void="' +
+                    esc(row.id) +
+                    '">撤销</button>') +
+                "</td></tr>",
+            )
+            .join("") +
+          "</tbody></table></div>"
+        : '<p class="muted small">暂无分配记录。</p>') +
+      '<div class="form-actions"><button type="button" data-action="close-modal">关闭</button><button type="button" class="primary" data-action="fee-allocation">＋ 新增分配</button></div>',
+  );
+  const searchInput = $("#fa-history-search");
+  if (searchInput) {
+    searchInput.oninput = () => {
+      const q = searchInput.value.toLowerCase().trim();
+      document.querySelectorAll("[data-fa-history]").forEach((row) => {
+        row.hidden = !row.textContent.toLowerCase().includes(q);
+      });
+    };
+  }
+  document.querySelectorAll("[data-fa-void]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.dataset.faVoid;
+      form(
+        "撤销分配记录",
+        '<p class="hint">撤销后保留原记录痕迹、释放对应基数可分配额度，并自动更新承办律师费用统计。</p><label>撤销原因<textarea name="reason" required placeholder="例如：比例调整，重新核算分配"></textarea></label>',
+        async (f) => {
+          await api("fee-allocations/" + id + "/void", "POST", {
+            reason: f.elements.reason.value,
+          });
+          await refresh();
+          notice("分配已撤销");
+          await openFeeAllocationHistory(filterName);
+        },
+        "确认撤销",
+      );
+    };
+  });
 }
 function aiKeyLinksHtml(providers, activeProviderId) {
   return providers
@@ -1041,7 +1530,7 @@ function renderSettings() {
         : "待配置密钥",
       ai.has_api_key ? "good" : "warn",
     ) +
-    '</div><p class="hint">默认适配<strong>硅基流动（SiliconFlow）</strong>的多款免费模型（如 <code>Qwen/Qwen3-8B</code>、<code>Qwen/Qwen2.5-7B-Instruct</code>、<code>THUDM/GLM-4-9B-0414</code>、<code>DeepSeek-R1-0528-Qwen3-8B</code>）及智谱免费 <code>glm-4-flash</code>；也支持切换至 DeepSeek、阿里云百炼、智谱 GLM、火山方舟等付费 API 或 <strong>Coding Plan 专属接口</strong>。扫描版 PDF 会在本机离线完成 OCR 后再提取字段，API Key 仅保存在本机且不随案件备份导出。</p>' +
+    '</div><p class="hint">默认适配<strong>硅基流动（SiliconFlow）</strong>的多款免费模型（如 <code>Qwen/Qwen3-8B</code>、<code>Qwen/Qwen3-VL-8B-Instruct</code>、<code>PaddlePaddle/PaddleOCR-VL-1.5</code>、<code>deepseek-ai/DeepSeek-OCR</code>）及智谱免费 <code>glm-4-flash</code> / <code>glm-4v-flash</code>；也支持切换至 DeepSeek、阿里云百炼、智谱 GLM、火山方舟等付费 API 或 <strong>Coding Plan 专属接口</strong>。扫描版 PDF 与合同图片会自动优先调用免费多模态视觉 OCR 识别（离线或纯文本接口自动回退至 Mac 本机 Vision OCR），API Key 仅保存在本机且不随案件备份导出。</p>' +
     aiConfigFormHtml(ai) +
     '</section><section class="panel"><h2>工作台格言</h2><form id="motto-form"><label>自定义格言<input name="dashboard_motto" maxlength="60" value="' +
     esc(data.preferences.custom_motto) +
@@ -1308,7 +1797,7 @@ async function editor(id = null, renew = false) {
             ai.base_url || "",
           );
       box.innerHTML =
-        '<div class="contract-ai-head"><div class="contract-ai-copy"><strong>从委托合同或案情文字智能识别填入</strong><p class="hint" id="contract-ai-status">支持文字版与扫描版 PDF、Word（.docx / .doc）合同拖入或选择，也可直接粘贴案情、当事人或收费文字提取填入，不保存合同原文件。</p></div><div class="page-actions">' +
+        '<div class="contract-ai-head"><div class="contract-ai-copy"><strong>从委托合同或案情文字智能识别填入</strong><p class="hint" id="contract-ai-status">支持文字版与扫描版 PDF、Word（.docx / .doc）、合同图片（.png / .jpg）拖入或选择，也可直接粘贴案情、当事人或收费文字提取填入，不保存合同原文件。</p></div><div class="page-actions">' +
         badge(
           ready
             ? (ai.model || "AI 已就绪") + (ai.is_free_model ? " · 免费" : "")
@@ -1321,9 +1810,9 @@ async function editor(id = null, renew = false) {
         (textPaneOpen ? "" : " hidden") +
         '><textarea id="contract-ai-text" rows="3" placeholder="粘贴合同条款、客户微信/邮件发来的案情描述、当事人信息或收费约定文字（支持 Cmd+Enter 快捷提取）…">' +
         esc(textDraft) +
-        '</textarea><div class="contract-ai-text-actions"><span class="hint">仅将上方文字发送至当前所选 AI 模型提取建档字段</span><div class="page-actions"><button type="button" data-ai-text-clear>清空</button><button type="button" class="primary" id="contract-ai-parse-text">提取文字填入</button></div></div></div><div id="contract-ai-drawer" class="contract-ai-drawer" hidden><p class="hint">默认预置<strong>硅基流动 SiliconFlow</strong> 免费模型（如 <code>Qwen/Qwen3-8B</code>），填入免费 API Key 即可使用；也可切换其他付费 API 或 Coding Plan 接口。</p>' +
+        '</textarea><div class="contract-ai-text-actions"><span class="hint">仅将上方文字发送至当前所选 AI 模型提取建档字段</span><div class="page-actions"><button type="button" data-ai-text-clear>清空</button><button type="button" class="primary" id="contract-ai-parse-text">提取文字填入</button></div></div></div><div id="contract-ai-drawer" class="contract-ai-drawer" hidden><p class="hint">默认预置<strong>硅基流动 SiliconFlow</strong> 免费模型（如 <code>Qwen/Qwen3-8B</code>，扫描件自动联动免费多模态 <code>PaddleOCR-VL-1.5</code>），填入一个免费 API Key 即可开箱使用；也可切换其他付费 API 或 Coding Plan 接口。</p>' +
         aiConfigFormHtml(ai) +
-        '</div><input id="contract-ai-file" type="file" accept=".pdf,.docx,.doc,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword" hidden />';
+        '</div><input id="contract-ai-file" type="file" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,image/png,image/jpeg,image/webp" hidden />';
       const drawer = box.querySelector("#contract-ai-drawer"),
         textPane = box.querySelector("#contract-ai-text-pane"),
         textInput = box.querySelector("#contract-ai-text"),
@@ -1419,7 +1908,11 @@ async function editor(id = null, renew = false) {
         }
         updateClients();
         const ocrNote = docMeta?.ocr_pages
-          ? "（含 " + docMeta.ocr_pages + " 页扫描件本机 OCR）"
+          ? "（含 " +
+            docMeta.ocr_pages +
+            " 页扫描件" +
+            (docMeta.ocr_model ? "多模态视觉 OCR" : "本机 OCR") +
+            "）"
           : "";
         const sourceLabel =
           docMeta?.format === "text"
@@ -1504,7 +1997,7 @@ async function editor(id = null, renew = false) {
         statusEl.textContent =
           "正在读取《" +
           file.name +
-          "》并提取案件信息（扫描件将自动执行本机 OCR），请稍候…";
+          "》并提取案件信息（扫描件将自动执行多模态视觉 / 本机 OCR），请稍候…";
         try {
           const data_base64 = await fileToBase64(file);
           const result = await api("cases/extract-contract", "POST", {
@@ -2070,6 +2563,18 @@ const actions = {
   "fee-note": (el) => {
     const c = findCase(el.dataset.id);
     openModal("费用说明", '<p class="pre">' + esc(c.fee_note) + "</p>");
+  },
+  "fee-allocation": (el) => openFeeAllocation(el.dataset.id || ""),
+  "fee-history": (el) => openFeeAllocationHistory(el.dataset.lawyer || ""),
+  "filter-lawyer": async (el) => {
+    filter = {
+      track: "",
+      q: el.dataset.lawyer || "",
+      field: "lawyer",
+      status: "",
+      finance: "",
+    };
+    await navigate("cases");
   },
   "filter-invoiced-unpaid": async () => {
     filter = {

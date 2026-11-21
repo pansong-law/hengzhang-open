@@ -375,7 +375,7 @@ test("progress editing and deletion require the current case revision and surviv
     await s.close();
   }
 });
-test("empty offline workspace has no account, bill or allocation routes", async () => {
+test("empty offline workspace has no account or bill routes", async () => {
   const s = await fixture();
   try {
     const w = await s.request("workspace");
@@ -383,13 +383,17 @@ test("empty offline workspace has no account, bill or allocation routes", async 
     assert.deepEqual(w.cases, []);
     assert.equal(w.summary.count, 0);
     assert.equal(w.user, undefined);
+    assert.deepEqual(w.fee_allocations, {
+      can_allocate: true,
+      total: 0,
+      by_lawyer: [],
+    });
     for (const route of [
       "users",
       "login",
       "register",
       "bills",
       "standards",
-      "fee-allocations",
     ])
       assert.equal((await s.request(route)).status, 404);
     assert.equal(
@@ -1181,6 +1185,263 @@ test("AI config persists with masked key, never leaks into backups, and extracts
         .filter((f) => f.endsWith(".docx") || f.endsWith(".pdf")).length,
       0,
     );
+  } finally {
+    await s.close();
+  }
+});
+
+test("scanned PDF contracts use free multimodal VLM OCR, filter seal codes, calibrate 1-year dates, and fail over on TPM limits", async () => {
+  const modelsCalled = [];
+  let qwen3Attempts = 0;
+  const s = await fixture({
+    extractContract: async ({ filename }) => ({
+      format: "pdf",
+      pages: 2,
+      ocr_pages: 2,
+      page_images: [
+        {
+          page: 1,
+          data_url: "data:image/jpeg;base64,AAA=",
+          vision_text: "大成蓉（2026）顾字第40号 甲方：四川天府新区科创和人才服务有限公司 指派松、谢骏莉、陈芸、谢欣伶、田文俊",
+        },
+        {
+          page: 2,
+          data_url: "data:image/jpeg;base64,BBB=",
+          vision_text: "期限为壹年，即从2026年5月1日起至2027年生月30日止。法人代表火：01100856-32 签订日期：2026年4月24日",
+        },
+      ],
+      char_count: 110,
+      truncated: false,
+      text: "期限为壹年，即从2026年5月1日起至2027年生月30日止。",
+      filename,
+    }),
+    aiFetch: async (_url, options) => {
+      const reqBody = JSON.parse(options.body);
+      modelsCalled.push(reqBody.model);
+      if (reqBody.model === "PaddlePaddle/PaddleOCR-VL-1.5") {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content:
+                    "大成蓉（2026）顾字第40号\\n指派\\(\\underline{\\text{潘松、谢骏莉、陈芸、谢欣伶、田文俊}}\\)等律师\\n期限为壹年，即从\\(\\underline{2026}\\)年\\(\\underline{5}\\)月\\(\\underline{1}\\)日起至\\(\\underline{2027}\\)年\\(\\underline{4}\\)月\\(\\underline{30}\\)日止。<|LOC_100|>",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (reqBody.model === "Qwen/Qwen3-8B" && qwen3Attempts++ === 0) {
+        return new Response(
+          JSON.stringify({
+            message: "Request was rejected due to rate limiting. Details: TPM limit reached.",
+          }),
+          { status: 400 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  track: "advisory",
+                  case_no: "大成蓉（2026）顾字第40号",
+                  client: "四川天府新区科创和人才服务有限公司",
+                  client_contact: "法人代表：01100856-32",
+                  service_start: "2026-05-01",
+                  service_end: "2027-05-30",
+                  lawyer: "",
+                  co_lawyers: ["潘松律师", "谢骏莉", "陈芸", "谢欣伶", "田文俊"],
+                  sign_date: "2026-04-24",
+                  contract_amount: "78000元",
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  try {
+    await s.request("ai/config", "PUT", {
+      provider: "siliconflow",
+      base_url: "https://api.siliconflow.cn/v1",
+      api_key: "sk-free-vlm-key-9999",
+      model: "Qwen/Qwen3-8B",
+    });
+    const res = await s.request("cases/extract-contract", "POST", {
+      filename: "科才2026常年法律顾问合同.pdf",
+      data_base64: Buffer.from("%PDF-1.4 scanned").toString("base64"),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.document.ocr_model, "PaddlePaddle/PaddleOCR-VL-1.5");
+    assert(modelsCalled.includes("PaddlePaddle/PaddleOCR-VL-1.5"));
+    assert(modelsCalled.includes("Qwen/Qwen2.5-7B-Instruct"));
+    assert.equal(res.extracted.client_contact, "");
+    assert.equal(res.extracted.service_start, "2026-05-01");
+    assert.equal(res.extracted.service_end, "2027-04-30");
+    assert.equal(res.extracted.lawyer, "潘松");
+    assert.deepEqual(res.extracted.co_lawyers, ["谢骏莉", "陈芸", "谢欣伶", "田文俊"]);
+    assert.equal(res.extracted.contract_amount, 78000);
+  } finally {
+    await s.close();
+  }
+});
+
+test("lawyer fee allocation supports percentage and fixed splits, idempotency, basis locking, voiding, backup round-trip, and deletion cascade", async () => {
+  const s = await fixture();
+  try {
+    const a = (
+      await s.request("cases", "POST", {
+        track: "project",
+        name: "分配案件甲",
+        lawyer: "潘松",
+        contract_amount: 10000,
+      })
+    ).case;
+    const b = (
+      await s.request("cases", "POST", {
+        track: "advisory",
+        client: "分配客户乙",
+        lawyer: "潘松",
+        contract_amount: 20000,
+      })
+    ).case;
+
+    await s.request("cases/" + a.id + "/collections", "POST", {
+      date: "2026-10-19",
+      amount: 500,
+    });
+    await s.request("cases/" + a.id + "/collections", "POST", {
+      date: "2026-10-20",
+      amount: 1000,
+    });
+
+    let allocs = await s.request("fee-allocations");
+    assert.equal(allocs.status, 200);
+    assert.equal(allocs.can_allocate, true);
+    const optA = allocs.cases.find((c) => c.id === a.id);
+    const optB = allocs.cases.find((c) => c.id === b.id);
+    assert.equal(optA.latest_receipt.amount, 1000);
+    assert.equal(optB.latest_receipt, null);
+
+    const cases = [
+      { case_id: a.id, basis_id: optA.default_basis, base_amount: 1000 },
+      { case_id: b.id, basis_id: optB.default_basis, base_amount: 500 },
+    ];
+    const recipients = [
+      { name: "陈芸", kind: "rate", value: 30 },
+      { name: "谢骏莉", kind: "amount", value: 100 },
+    ];
+    const payload = { request_id: "batch-one", cases, recipients, note: "首期分配" };
+
+    const preview = await s.request("fee-allocations/preview", "POST", payload);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.total, 650);
+    assert.equal(preview.plans.length, 2);
+    assert.equal((await s.request("fee-allocations")).records.length, 0);
+
+    const committed = await s.request("fee-allocations", "POST", payload);
+    assert.equal(committed.status, 200);
+    assert.equal(committed.total, 650);
+    assert.equal((await s.request("fee-allocations", "POST", payload)).unchanged, true);
+    assert.equal(
+      (await s.request("fee-allocations", "POST", { ...payload, note: "篡改" }))
+        .status,
+      409,
+    );
+
+    const summary = await s.request("fee-allocations/summary");
+    assert.equal(summary.total, 650);
+    assert.equal(
+      summary.by_lawyer.find((r) => r.lawyer === "陈芸").allocated,
+      450,
+    );
+    assert.equal(
+      summary.by_lawyer.find((r) => r.lawyer === "谢骏莉").allocated,
+      200,
+    );
+    assert.equal((await s.request("cases/" + a.id)).case.fee_summary.received, 1500);
+
+    const second = {
+      request_id: "batch-two",
+      cases: [cases[0]],
+      recipients: [{ name: "谢欣伶", kind: "rate", value: 60 }],
+    };
+    assert.equal((await s.request("fee-allocations", "POST", second)).status, 200);
+    allocs = await s.request("fee-allocations");
+    assert.equal(allocs.records.length, 5);
+    assert.equal(
+      allocs.cases
+        .find((c) => c.id === a.id)
+        .bases.find((x) => x.id === optA.default_basis).remaining,
+      0,
+    );
+
+    // Overflow & locked basis modification rejected
+    assert.equal(
+      (
+        await s.request("fee-allocations", "POST", {
+          request_id: "overflow",
+          cases,
+          recipients: [{ name: "陈芸", kind: "amount", value: 1 }],
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await s.request("fee-allocations", "POST", {
+          request_id: "changed-base",
+          cases: [{ ...cases[0], base_amount: 2000 }],
+          recipients: [{ name: "陈芸", kind: "amount", value: 1 }],
+        })
+      ).status,
+      409,
+    );
+
+    // Void one allocation record and verify quota release
+    const rec = allocs.records.find(
+      (r) => r.case_id === a.id && r.recipient === "陈芸",
+    );
+    assert.equal(
+      (
+        await s.request("fee-allocations/" + rec.id + "/void", "POST", {
+          reason: "重新核算",
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await s.request("fee-allocations/" + rec.id + "/void", "POST", {
+          reason: "重复撤销",
+        })
+      ).unchanged,
+      true,
+    );
+    allocs = await s.request("fee-allocations");
+    assert.equal(
+      allocs.cases
+        .find((c) => c.id === a.id)
+        .bases.find((x) => x.id === optA.default_basis).remaining,
+      300,
+    );
+
+    // Deleting case cascades its allocations
+    const latestA = (await s.request("cases/" + a.id)).case;
+    assert.equal(
+      (await s.request("cases/" + a.id, "DELETE", { revision: latestA.revision }))
+        .status,
+      200,
+    );
+    allocs = await s.request("fee-allocations");
+    assert(allocs.records.every((r) => r.case_id !== a.id));
+    assert.equal((await s.request("fee-allocations/summary")).total, 250);
   } finally {
     await s.close();
   }

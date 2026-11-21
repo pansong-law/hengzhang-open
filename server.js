@@ -42,6 +42,14 @@ import {
   extractCaseFromContractText,
   fetchProviderModels,
 } from "./lib/ai-contract.js";
+import {
+  allocationOptions,
+  allocationSummary,
+  cascadeDeleteCaseAllocations,
+  createAllocationBatch,
+  visibleAllocations,
+  voidAllocationRecord,
+} from "./lib/fee-allocation.js";
 const ROOT = path.dirname(fileURLToPath(import.meta.url)),
   PUBLIC = path.join(ROOT, "public");
 const APP_VERSION = JSON.parse(
@@ -204,10 +212,73 @@ export function createLocalApp({
             ai: aiStore.publicView(),
             cases,
             summary: summary(cases),
+            fee_allocations: allocationSummary(db),
             tracks: TRACKS,
             stages: LITIGATION_STAGES,
             updated_at: timestamp(),
           });
+        }
+        if (p === "/api/fee-allocations/summary" && method === "GET")
+          return json(res, 200, allocationSummary(db));
+        if (p === "/api/fee-allocations" && method === "GET")
+          return json(res, 200, {
+            can_allocate: true,
+            cases: allocationOptions(db),
+            records: visibleAllocations(db),
+          });
+        if (
+          ["/api/fee-allocations/preview", "/api/fee-allocations"].includes(
+            p,
+          ) &&
+          method === "POST"
+        ) {
+          const b = await body(req);
+          if (p.endsWith("/preview")) {
+            return json(
+              res,
+              200,
+              createAllocationBatch(
+                db,
+                structuredClone(db.meta.fee_allocations),
+                b,
+                "本机",
+                makeId,
+                timestamp,
+              ).result,
+            );
+          }
+          const result = store.update((d) => {
+            const out = createAllocationBatch(
+              d,
+              d.meta.fee_allocations,
+              b,
+              "本机",
+              makeId,
+              timestamp,
+            );
+            d.meta.fee_allocations = out.data;
+            return out.result;
+          });
+          return json(res, 200, result);
+        }
+        const voidAllocMatch = p.match(
+          /^\/api\/fee-allocations\/([a-zA-Z0-9_-]+)\/void$/,
+        );
+        if (voidAllocMatch && method === "POST") {
+          const b = await body(req);
+          const result = store.update((d) => {
+            const out = voidAllocationRecord(
+              d,
+              d.meta.fee_allocations,
+              voidAllocMatch[1],
+              b.reason,
+              "本机",
+              timestamp,
+            );
+            d.meta.fee_allocations = out.data;
+            return out.result;
+          });
+          return json(res, 200, result);
         }
         if (p === "/api/ai/config" && method === "GET")
           return json(res, 200, { ai: aiStore.publicView() });
@@ -271,7 +342,7 @@ export function createLocalApp({
             doc = await extractContract({ filename, buffer });
           }
           const extracted = await extractCaseFromContractText(
-            doc.text,
+            doc,
             resolved,
             { fetchImpl: aiFetch },
           );
@@ -284,6 +355,7 @@ export function createLocalApp({
               format: doc.format,
               pages: doc.pages,
               ocr_pages: doc.ocr_pages,
+              ocr_model: doc.ocr_model || null,
               char_count: doc.char_count,
               truncated: doc.truncated,
             },
@@ -467,6 +539,7 @@ export function createLocalApp({
               (d) => {
                 d.cases = d.cases.filter((x) => x.id !== id);
                 delete d.meta.case_payable_reminders[id];
+                cascadeDeleteCaseAllocations(d.meta, id);
               },
             );
             return json(res, 200, { ok: true });

@@ -342,6 +342,17 @@ try {
   });
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   await expect(page.getByRole("heading", { name: "按业务类型" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "承办律师费用统计" })).toBeVisible();
+  await page.locator("#lawyer-fee-stats").getByRole("button", { name: "分配律师费", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "分配律师费" })).toBeVisible();
+  await page.locator("#fa-case-options input[type=checkbox]").first().check();
+  await page.locator("[data-fa-name]").fill("合作律师甲");
+  await page.locator("[data-fa-value]").fill("30");
+  await page.getByRole("button", { name: "预览分配", exact: true }).click();
+  await expect(page.locator("#fa-preview")).toContainText("本次分配预览");
+  await page.getByRole("button", { name: "保存分配", exact: true }).click();
+  await expect(page.locator("#modal")).not.toBeVisible();
+  await expect(page.locator("#lawyer-fee-stats")).toContainText("合作律师甲");
   await page.screenshot({
     path: path.join(workspace, "费用统计.png"),
     fullPage: true,
