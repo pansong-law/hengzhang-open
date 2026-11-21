@@ -23,6 +23,13 @@
     clearTimeout(toast.timer);
     toast.timer = setTimeout(() => (box.hidden = true), 5000);
   };
+  function cleanReleaseNotes(text) {
+    return String(text || "")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      .trim();
+  }
   function formatBytes(bytes) {
     const n = Number(bytes);
     if (!Number.isFinite(n) || n <= 0) return "0 B";
@@ -157,7 +164,7 @@
       '</strong></div></div><p class="hint update-download-hint">' +
       esc(hint) +
       '</p></div></div><h3>更新说明</h3><div class="pre update-notes">' +
-      esc(state.notes) +
+      esc(cleanReleaseNotes(state.notes)) +
       '</div><div class="form-actions">' +
       actions +
       "</div></div>"
