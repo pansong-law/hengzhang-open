@@ -13,8 +13,8 @@
     "dev:server": "node server.js",
     "test": "node --test scripts/local.test.mjs scripts/updates.test.mjs scripts/release-snapshot.test.mjs",
     "test:desktop": "node scripts/desktop-smoke.mjs",
-    "pack:mac": "electron-builder --mac --dir --universal",
-    "dist:mac": "electron-builder --mac dmg --universal",
+    "pack:mac": "electron-builder --mac --dir --arm64 && node scripts/slim-mac-dist.mjs --pack-only",
+    "dist:mac": "electron-builder --mac dmg --arm64 && node scripts/slim-mac-dist.mjs",
     "release:preview": "node scripts/publish-release.mjs",
     "release": "node scripts/publish-release.mjs --publish"
   },
@@ -49,6 +49,10 @@
       "category": "public.app-category.productivity",
       "icon": "desktop/assets/icon.icns",
       "identity": "-",
+      "electronLanguages": [
+        "zh_CN",
+        "en"
+      ],
       "target": [
         "dmg"
       ],
@@ -56,7 +60,7 @@
     },
     "dmg": {
       "title": "衡账",
-      "artifactName": "Hengzhang-${version}-${arch}.dmg"
+      "artifactName": "Hengzhang-${version}-universal.dmg"
     }
   },
   "homepage": "https://aifalv.vip/",
