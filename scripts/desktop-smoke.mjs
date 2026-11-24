@@ -606,14 +606,14 @@ try {
   await expect
     .poll(() => application.evaluate(() => globalThis.updateDownloadCalls))
     .toContain("https://rmfyalk.court.gov.cn/");
-  // Verify in-app Legal Calc overlay (8 built-ins incl. VAT, AI-first editor, isolated sandbox under strict CSP)
+  // Verify in-app Legal Calc overlay (10 built-ins incl. VAT, liquidated damages, limitation, AI-first editor, isolated sandbox under strict CSP)
   const cspErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") cspErrors.push(m.text());
   });
   await page.locator("#legal-calc-trigger").click();
   await expect(page.locator("#legal-calc-backdrop")).toBeVisible();
-  await expect(page.locator(".lc-card")).toHaveCount(8);
+  await expect(page.locator(".lc-card")).toHaveCount(10);
   await page.locator('.lc-card[data-tool="vat"]').click();
   await page.locator('.lc-form input[name="gross"]').fill("106000");
   await expect(page.locator(".lc-result")).toContainText("100,000.00 元");

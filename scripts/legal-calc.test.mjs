@@ -239,8 +239,19 @@ test("standalone legal calc CRUD, VAT protection, sandbox CSP, and platform AI m
       400,
     );
 
-    // 3. Built-in IDs (including vat) cannot be overwritten or deleted, and external sandbox scripts are blocked
-    assert.ok(BUILTIN_IDS.includes("vat"));
+    // 3. Built-in IDs (10 built-ins ordered with lawyer & vat first) cannot be overwritten or deleted, and external sandbox scripts are blocked
+    assert.deepEqual(BUILTIN_IDS, [
+      "lawyer",
+      "vat",
+      "court",
+      "liquidated",
+      "interest",
+      "limitation",
+      "labor",
+      "traffic",
+      "days",
+      "rmb",
+    ]);
     assert.equal(
       (
         await s.request("legal-calc", "POST", {
