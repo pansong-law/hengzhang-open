@@ -1792,6 +1792,9 @@ async function editor(id = null, renew = false) {
       pendingText = "",
       textDraft = "",
       textPaneOpen = false;
+    let trackChosen = Boolean(id), review = null;
+    el.elements.track.addEventListener("change", () => { trackChosen = true; renderReview?.(); });
+    let renderReview;
     const renderAiBar = () => {
       const ai = data.ai || {},
         ready =
@@ -1800,7 +1803,7 @@ async function editor(id = null, renew = false) {
             ai.base_url || "",
           );
       box.innerHTML =
-        '<div class="contract-ai-head"><div class="contract-ai-copy"><strong>从委托合同或案情文字智能识别填入</strong><p class="hint" id="contract-ai-status">支持文字版与扫描版 PDF、Word（.docx / .doc）、合同图片（.png / .jpg）拖入或选择，也可直接粘贴案情、当事人或收费文字提取填入，不保存合同原文件。</p></div><div class="page-actions">' +
+        '<div class="contract-ai-head"><div class="contract-ai-copy"><strong>从委托合同或案情文字智能识别填入</strong><p class="hint" id="contract-ai-status">支持文字版与扫描版 PDF、Word（.docx / .doc）、合同图片（.png / .jpg）拖入或选择，也可直接粘贴案情、当事人或收费文字提取并与原文一起预览，不保存合同原文件。</p></div><div class="page-actions">' +
         badge(
           ready
             ? (ai.model || "AI 已就绪") + (ai.is_free_model ? " · 免费" : "")
@@ -1813,7 +1816,7 @@ async function editor(id = null, renew = false) {
         (textPaneOpen ? "" : " hidden") +
         '><textarea id="contract-ai-text" rows="3" placeholder="粘贴合同条款、客户微信/邮件发来的案情描述、当事人信息或收费约定文字（支持 Cmd+Enter 快捷提取）…">' +
         esc(textDraft) +
-        '</textarea><div class="contract-ai-text-actions"><span class="hint">仅将上方文字发送至当前所选 AI 模型提取建档字段</span><div class="page-actions"><button type="button" data-ai-text-clear>清空</button><button type="button" class="primary" id="contract-ai-parse-text">提取文字填入</button></div></div></div><div id="contract-ai-drawer" class="contract-ai-drawer" hidden><p class="hint">默认预置<strong>硅基流动 SiliconFlow</strong> 免费模型（如 <code>Qwen/Qwen3-8B</code>，扫描件自动联动免费多模态 <code>PaddleOCR-VL-1.5</code>），填入一个免费 API Key 即可开箱使用；也可切换其他付费 API 或 Coding Plan 接口。</p>' +
+        '</textarea><div class="contract-ai-text-actions"><span class="hint">仅将上方文字发送至当前所选 AI 模型提取建档字段</span><div class="page-actions"><button type="button" data-ai-text-clear>清空</button><button type="button" class="primary" id="contract-ai-parse-text">提取文字并预览</button></div></div></div><div id="contract-ai-drawer" class="contract-ai-drawer" hidden><p class="hint">默认预置<strong>硅基流动 SiliconFlow</strong> 免费模型（如 <code>Qwen/Qwen3-8B</code>，扫描件自动联动免费多模态 <code>PaddleOCR-VL-1.5</code>），填入一个免费 API Key 即可开箱使用；也可切换其他付费 API 或 Coding Plan 接口。</p>' +
         aiConfigFormHtml(ai) +
         '</div><input id="contract-ai-file" type="file" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,image/png,image/jpeg,image/webp" hidden />';
       const drawer = box.querySelector("#contract-ai-drawer"),
@@ -1857,78 +1860,57 @@ async function editor(id = null, renew = false) {
           await handleContractText(t);
         }
       });
-      const applyExtracted = (extracted, docMeta) => {
-        let filled = 0;
-        if (
-          extracted.track &&
-          ["litigation", "advisory", "project"].includes(extracted.track)
-        ) {
-          el.elements.track.value = extracted.track;
-          updateTrack();
-        }
-        for (const key of [
-          "case_no",
-          "client",
-          "client_contact",
-          "plaintiff",
-          "defendant",
-          "third_party",
-          "case_type",
-          "name",
-          "opponent",
-          "service_start",
-          "service_end",
-          "lawyer",
-          "sign_date",
-          "fee_note",
-          "notes",
-        ]) {
-          if (extracted[key] && el.elements[key]) {
-            el.elements[key].value = extracted[key];
-            filled++;
+      const reviewEl = document.createElement("section");
+      reviewEl.id = "contract-ai-review";
+      reviewEl.hidden = true;
+      box.append(reviewEl);
+      const trackLabels = { litigation:"诉讼", advisory:"顾问", project:"专项" };
+      const labels = {case_no:"律所内部案号",client:"客户",client_contact:"客户联系人",plaintiff:"原告",defendant:"被告",third_party:"第三人",case_type:"案由",subject_amount:"标的额（元）",case_stage:"当前阶段",scope:"代理服务范围",name:"项目名称",opponent:"对方当事人",service_start:"服务开始",service_end:"服务结束",lawyer:"承办律师",co_lawyers:"协办律师",sign_date:"签约日期",contract_amount:"固定律师费（元）",fee_note:"费用说明",notes:"备注"};
+      const common = ["case_no","client","client_contact","lawyer","co_lawyers","sign_date","contract_amount","fee_note","notes"];
+      const byTrack = {litigation:["plaintiff","defendant","third_party","case_type","subject_amount","case_stage","scope"],advisory:["service_start","service_end"],project:["name","opponent"]};
+      renderReview = () => {
+        if (!review) { reviewEl.hidden = true; return; }
+        const { extracted, document: doc } = review;
+        const evidence = extracted.evidence || {};
+        const current = el.elements.track.value;
+        const track = !trackChosen && Object.hasOwn(trackLabels, extracted.track) ? extracted.track : current;
+        const keys = [...common, ...(byTrack[track] || [])].filter(k => evidence[k] && extracted[k] != null && extracted[k] !== "" && (!Array.isArray(extracted[k]) || extracted[k].length));
+        const text = value => Array.isArray(value) ? value.join("、") : value;
+        reviewEl.hidden = false;
+        reviewEl.innerHTML = '<h3>核对识别结果</h3><p class="hint">'+(extracted.track || trackChosen ? '回填到：'+esc(trackLabels[track]) : '材料不足以判断业务线，保留当前选择。')+(doc?.truncated?' 本次只提取了材料的前一部分。':'')+'</p>'+
+          (keys.length ? '<dl class="contract-ai-review-results">'+keys.map(k=>'<div><dt>'+esc(labels[k])+'</dt><dd>'+esc(text(extracted[k]))+'<br><small class="hint">原文：'+esc(evidence[k])+'</small></dd></div>').join('')+'</dl><label><input type="checkbox" data-ai-overwrite> 覆盖表单中已有的对应字段</label><button type="button" class="primary" data-ai-apply>确认填入表单</button>' : '<p class="hint">没有找到有原文依据的可填写字段。</p>');
+        const apply = reviewEl.querySelector("[data-ai-apply]");
+        if (!apply) return;
+        apply.onclick = () => {
+          const overwrite = reviewEl.querySelector("[data-ai-overwrite]").checked;
+          if (current !== track) {
+            const filled = (byTrack[current] || []).some(k => k === "scope" ? el.querySelector('[name="scope"]:checked') : el.elements[k]?.value?.trim());
+            if (filled && !overwrite) { statusEl.textContent = "当前业务线已有填写内容，请手动选择业务线，或确认允许覆盖后再填入。"; return; }
+            el.elements.track.value = track;
+            updateTrack();
           }
-        }
-        if (Array.isArray(extracted.co_lawyers) && extracted.co_lawyers.length) {
-          el.elements.co_lawyers.value = extracted.co_lawyers.join("、");
-          filled++;
-        }
-        if (extracted.contract_amount != null) {
-          el.elements.contract_amount.value = extracted.contract_amount;
-          filled++;
-        }
-        if (el.elements.track.value === "litigation") {
-          if (extracted.case_stage) {
-            el.elements.case_stage.value = extracted.case_stage;
-            filled++;
+          let count = 0;
+          for (const k of keys) {
+            if (k === "scope") {
+              const inputs = [...el.querySelectorAll('[name="scope"]')];
+              if (overwrite || !inputs.some(c => c.checked)) { inputs.forEach(c => { c.checked = extracted.scope.includes(c.value); }); count++; }
+              continue;
+            }
+            const field = el.elements[k];
+            if (!field || field.disabled || (!overwrite && field.value.trim())) continue;
+            field.value = text(extracted[k]);
+            count++;
           }
-          if (Array.isArray(extracted.scope) && extracted.scope.length) {
-            const scopeSet = new Set(extracted.scope);
-            el.querySelectorAll('[name="scope"]').forEach((cb) => {
-              cb.checked = scopeSet.has(cb.value);
-            });
-            filled++;
-          }
-        }
-        updateClients();
-        const ocrNote = docMeta?.ocr_pages
-          ? "（含 " +
-            docMeta.ocr_pages +
-            " 页扫描件" +
-            (docMeta.ocr_model ? "多模态视觉 OCR" : "本机 OCR") +
-            "）"
-          : "";
-        const sourceLabel =
-          docMeta?.format === "text"
-            ? "粘贴文字"
-            : "《" + (docMeta?.filename || "合同") + "》";
-        statusEl.textContent =
-          "已从" +
-          sourceLabel +
-          ocrNote +
-          "识别填入 " +
-          filled +
-          " 项字段，请核对后保存。";
-        notice("智能识别完成，请核对回填信息");
+          updateClients();
+          statusEl.textContent = "已确认填入 " + count + " 项，已有手填内容默认保留，请核对后保存案件。";
+        };
+      };
+      if (review) renderReview();
+      const showExtracted = result => {
+        if (!el.isConnected) return;
+        review = result;
+        renderReview();
+        statusEl.textContent = "识别完成。请核对原文依据，再决定是否填入。";
       };
       const handleContractText = async (rawText) => {
         const text = String(rawText ?? textInput.value ?? "").trim();
@@ -1954,20 +1936,21 @@ async function editor(id = null, renew = false) {
           drawer.querySelector('[name="api_key"]')?.focus();
           return;
         }
+        review = null; renderReview();
         parseTextBtn.disabled = true;
         pickBtn.disabled = true;
         parseTextBtn.textContent = "正在提取…";
         statusEl.textContent = "正在从粘贴文字中提取案件信息，请稍候…";
         try {
           const result = await api("cases/extract-contract", "POST", { text });
-          applyExtracted(result.extracted, result.document);
+          showExtracted(result);
         } catch (error) {
           statusEl.textContent = "提取未完成：" + error.message;
           notice(error.message);
         } finally {
           parseTextBtn.disabled = false;
           pickBtn.disabled = false;
-          parseTextBtn.textContent = "提取文字填入";
+          parseTextBtn.textContent = "提取文字并预览";
         }
       };
       parseTextBtn.onclick = () => handleContractText();
@@ -1995,6 +1978,7 @@ async function editor(id = null, renew = false) {
           return;
         }
         pickBtn.disabled = true;
+        review = null; renderReview();
         parseTextBtn.disabled = true;
         pickBtn.textContent = "正在识别…";
         statusEl.textContent =
@@ -2007,7 +1991,7 @@ async function editor(id = null, renew = false) {
             filename: file.name,
             data_base64,
           });
-          applyExtracted(result.extracted, result.document);
+          showExtracted(result);
         } catch (error) {
           statusEl.textContent = "识别未完成：" + error.message;
           notice(error.message);

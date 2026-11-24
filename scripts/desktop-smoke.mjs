@@ -563,6 +563,26 @@ try {
     page.getByRole("heading", { name: "新建案件", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await request(page,"ai/config","PUT",{provider:"siliconflow",model:"Qwen/Qwen3-8B",api_key:"synthetic-test-key-only"});
+  await page.reload();
+  await page.getByRole("button", { name:"案件台账", exact:true }).click();
+  await page.getByRole("button", { name:"＋ 新建案件", exact:true }).click();
+  await page.locator('[name=track]').selectOption('litigation');
+  await page.locator('[name=client]').fill('人工填写客户');
+  const extraction = '**/api/cases/extract-contract';
+  await page.route(extraction, route=>route.fulfill({json:{extracted:{track:'litigation',client:'虚构客户甲',subject_amount:12345.67,case_stage:'一审',contract_amount:5000,evidence:{client:'委托方：虚构客户甲',subject_amount:'诉讼标的额：12345.67元',contract_amount:'固定律师费5000元'}},document:{format:'text'}}}));
+  await page.locator('#contract-ai-text-toggle').click();
+  await page.locator('#contract-ai-text').fill('委托方：虚构客户甲。诉讼标的额：12345.67元。固定律师费5000元。');
+  await page.locator('#contract-ai-parse-text').click();
+  await expect(page.locator('#contract-ai-review')).toContainText('原文：诉讼标的额：12345.67元');
+  await expect(page.locator('[name=subject_amount]')).toHaveValue('');
+  await page.locator('[data-ai-apply]').click();
+  await expect(page.locator('[name=client]')).toHaveValue('人工填写客户');
+  await expect(page.locator('[name=subject_amount]')).toHaveValue('12345.67');
+  await expect(page.locator('[name=contract_amount]')).toHaveValue('5000');
+  await expect(page.locator('[name=case_stage]')).toHaveValue('');
+  await page.unroute(extraction);
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
   await application.evaluate(({ net }) => {
     net.fetch = async () => {
       throw Error("offline");

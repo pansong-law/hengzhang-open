@@ -1118,8 +1118,8 @@ test("AI config persists with masked key, never leaks into backups, and extracts
     assert.equal(initial.is_free_model, true);
     assert.equal(initial.has_api_key, false);
 
-    const xml =
-      '<w:document><w:body><w:p><w:r><w:t>委托代理合同：甲方（委托人）成都宏远科技有限公司，乙方北京大成（成都）律师事务所，案由买卖合同纠纷，律师费人民币50000元整。</w:t></w:r></w:p></w:body></w:document>';
+    const contract = "委托代理合同。律所内部案号：HZ-2026-088。委托人：成都宏远科技有限公司。原告：成都宏远科技有限公司。被告：山海建设集团有限公司。案由：买卖合同纠纷。代理范围：一审、二审、执行。承办律师：潘松。协办律师：李明、张华。签约日期：2026年11月15日。诉讼标的额：123,456.78元。固定律师费：50000元。";
+    const xml = '<w:document><w:body><w:p><w:r><w:t>'+contract+'</w:t></w:r></w:p></w:body></w:document>';
     const docxBuffer = buildMinimalZip("word/document.xml", xml);
 
     const noKey = await s.request("cases/extract-contract", "POST", {
@@ -1159,7 +1159,10 @@ test("AI config persists with masked key, never leaks into backups, and extracts
     assert.equal(extracted.extracted.client, "成都宏远科技有限公司");
     assert.equal(extracted.extracted.defendant, "山海建设集团有限公司");
     assert.equal(extracted.extracted.case_type, "买卖合同纠纷");
-    assert.equal(extracted.extracted.case_stage, "一审");
+    assert.equal(extracted.extracted.case_stage, "");
+    assert.equal(extracted.extracted.subject_amount, 123456.78);
+    assert.match(extracted.extracted.evidence.subject_amount, /123,456.78/);
+    assert.equal(extracted.extracted.notes, "");
     assert.deepEqual(extracted.extracted.scope, ["一审", "二审", "执行"]);
     assert.equal(extracted.extracted.lawyer, "潘松");
     assert.deepEqual(extracted.extracted.co_lawyers, ["李明", "张华"]);
@@ -1172,13 +1175,16 @@ test("AI config persists with masked key, never leaks into backups, and extracts
     assert.equal(tooShortText.status, 400);
 
     const textExtracted = await s.request("cases/extract-contract", "POST", {
-      text: "客户成都宏远科技有限公司委托我所潘松、李明律师代理诉山海建设集团有限公司买卖合同纠纷一审、二审、执行，固定律师费5万元。",
+      text: "委托人：成都宏远科技有限公司。委托代理买卖合同纠纷，固定律师费5万元。",
     });
     assert.equal(textExtracted.status, 200);
     assert.equal(textExtracted.document.format, "text");
     assert.equal(textExtracted.document.filename, "粘贴文字");
     assert.equal(textExtracted.extracted.client, "成都宏远科技有限公司");
     assert.equal(textExtracted.extracted.contract_amount, 50000);
+    const receipt = await s.request("cases/extract-contract", "POST", {text:"签收回执：收到材料两份，印章码5101000000000。"});
+    assert.equal(receipt.extracted.track, "");
+    assert.deepEqual(receipt.extracted.evidence, {});
     assert.equal(
       fs
         .readdirSync(s.dir)
@@ -1190,7 +1196,7 @@ test("AI config persists with masked key, never leaks into backups, and extracts
   }
 });
 
-test("scanned PDF contracts use free multimodal VLM OCR, filter seal codes, calibrate 1-year dates, and fail over on TPM limits", async () => {
+test("scanned PDF contracts use free multimodal VLM OCR, filter seal codes, reject an unsupported date, and fail over on TPM limits", async () => {
   const modelsCalled = [];
   let qwen3Attempts = 0;
   const s = await fixture({
@@ -1202,7 +1208,7 @@ test("scanned PDF contracts use free multimodal VLM OCR, filter seal codes, cali
         {
           page: 1,
           data_url: "data:image/jpeg;base64,AAA=",
-          vision_text: "大成蓉（2026）顾字第40号 甲方：四川天府新区科创和人才服务有限公司 指派松、谢骏莉、陈芸、谢欣伶、田文俊",
+          vision_text: "常年法律顾问合同。律所内部案号：大成蓉（2026）顾字第40号。甲方：合成文化交流测试有限公司。承办律师：潘松。协办律师：谢骏莉、陈芸、谢欣伶、田文俊。固定律师费：78000元。",
         },
         {
           page: 2,
@@ -1249,12 +1255,12 @@ test("scanned PDF contracts use free multimodal VLM OCR, filter seal codes, cali
                 content: JSON.stringify({
                   track: "advisory",
                   case_no: "大成蓉（2026）顾字第40号",
-                  client: "四川天府新区科创和人才服务有限公司",
+                  client: "合成文化交流测试有限公司",
                   client_contact: "法人代表：01100856-32",
                   service_start: "2026-05-01",
                   service_end: "2027-05-30",
-                  lawyer: "",
-                  co_lawyers: ["潘松律师", "谢骏莉", "陈芸", "谢欣伶", "田文俊"],
+                  lawyer: "潘松",
+                  co_lawyers: ["谢骏莉", "陈芸", "谢欣伶", "田文俊"],
                   sign_date: "2026-04-24",
                   contract_amount: "78000元",
                 }),
@@ -1274,7 +1280,7 @@ test("scanned PDF contracts use free multimodal VLM OCR, filter seal codes, cali
       model: "Qwen/Qwen3-8B",
     });
     const res = await s.request("cases/extract-contract", "POST", {
-      filename: "科才2026常年法律顾问合同.pdf",
+      filename: "合成常年法律顾问合同.pdf",
       data_base64: Buffer.from("%PDF-1.4 scanned").toString("base64"),
     });
     assert.equal(res.status, 200);
@@ -1283,7 +1289,7 @@ test("scanned PDF contracts use free multimodal VLM OCR, filter seal codes, cali
     assert(modelsCalled.includes("Qwen/Qwen2.5-7B-Instruct"));
     assert.equal(res.extracted.client_contact, "");
     assert.equal(res.extracted.service_start, "2026-05-01");
-    assert.equal(res.extracted.service_end, "2027-04-30");
+    assert.equal(res.extracted.service_end, "");
     assert.equal(res.extracted.lawyer, "潘松");
     assert.deepEqual(res.extracted.co_lawyers, ["谢骏莉", "陈芸", "谢欣伶", "田文俊"]);
     assert.equal(res.extracted.contract_amount, 78000);
