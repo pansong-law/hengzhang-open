@@ -387,6 +387,15 @@ test("empty offline workspace has no account or bill routes", async () => {
       can_allocate: true,
       total: 0,
       by_lawyer: [],
+      outbound_total: 0,
+      outbound_count: 0,
+      outbound_cases: 0,
+      outbound_by_lawyer: [],
+      inbound_total: 0,
+      inbound_count: 0,
+      inbound_cases: 0,
+      inbound_by_source: [],
+      net_total: 0,
     });
     for (const route of [
       "users",
@@ -1438,6 +1447,63 @@ test("lawyer fee allocation supports percentage and fixed splits, idempotency, b
       300,
     );
 
+    // Inbound allocation validation, summary breakdown & backup round-trip
+    assert.equal(
+      (
+        await s.request("fee-allocations", "POST", {
+          request_id: "inbound-missing-from",
+          direction: "inbound",
+          cases: [cases[0]],
+          recipients: [{ name: "本机", kind: "amount", value: 100 }],
+        })
+      ).status,
+      400,
+    );
+    const inboundRes = await s.request("fee-allocations", "POST", {
+      request_id: "batch-inbound-one",
+      direction: "inbound",
+      from_lawyer: "来源律师丙",
+      cases: [cases[0]],
+      recipients: [{ name: "本机", kind: "amount", value: 200 }],
+      note: "合作案分入",
+    });
+    assert.equal(inboundRes.status, 200);
+    assert.equal(inboundRes.direction, "inbound");
+    assert.equal(inboundRes.from_lawyer, "来源律师丙");
+    assert.equal(inboundRes.total, 200);
+
+    const biSummary = await s.request("fee-allocations/summary");
+    assert.equal(biSummary.outbound_total, 950);
+    assert.equal(biSummary.inbound_total, 200);
+    assert.equal(biSummary.net_total, -750);
+    assert.equal(
+      biSummary.inbound_by_source.find((r) => r.lawyer === "来源律师丙")
+        .allocated,
+      200,
+    );
+
+    // Backup export & restore preserves bidirectional records
+    const backup = await s.request("backups/export");
+    assert.equal(backup.status, 200);
+    delete backup.status;
+    const backupPayload = { backup };
+    const previewRestore = await s.request(
+      "backups/preview",
+      "POST",
+      backupPayload,
+    );
+    assert.equal(previewRestore.status, 200);
+    const restored = await s.request("backups/restore", "POST", {
+      ...backupPayload,
+      confirm: previewRestore.checksum,
+      current_checksum: previewRestore.current_checksum,
+    });
+    assert.equal(restored.status, 200);
+    const afterRestoreSummary = await s.request("fee-allocations/summary");
+    assert.equal(afterRestoreSummary.outbound_total, 950);
+    assert.equal(afterRestoreSummary.inbound_total, 200);
+    assert.equal(afterRestoreSummary.net_total, -750);
+
     // Deleting case cascades its allocations
     const latestA = (await s.request("cases/" + a.id)).case;
     assert.equal(
@@ -1447,7 +1513,10 @@ test("lawyer fee allocation supports percentage and fixed splits, idempotency, b
     );
     allocs = await s.request("fee-allocations");
     assert(allocs.records.every((r) => r.case_id !== a.id));
-    assert.equal((await s.request("fee-allocations/summary")).total, 250);
+    const afterDeleteSummary = await s.request("fee-allocations/summary");
+    assert.equal(afterDeleteSummary.total, 250);
+    assert.equal(afterDeleteSummary.outbound_total, 250);
+    assert.equal(afterDeleteSummary.inbound_total, 0);
   } finally {
     await s.close();
   }

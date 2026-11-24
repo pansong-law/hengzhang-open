@@ -743,13 +743,33 @@ function knownLawyers() {
     if (c.lawyer) set.add(c.lawyer);
     for (const co of c.co_lawyers || []) if (co) set.add(co);
   }
-  for (const row of data?.fee_allocations?.by_lawyer || []) {
-    if (row.lawyer) set.add(row.lawyer);
+  const fa = data?.fee_allocations || {};
+  for (const list of [
+    fa.by_lawyer,
+    fa.outbound_by_lawyer,
+    fa.inbound_by_source,
+  ]) {
+    for (const row of list || []) if (row.lawyer) set.add(row.lawyer);
   }
   return [...set].sort((a, b) => a.localeCompare(b, "zh-CN"));
 }
+function faEffectiveDir(row) {
+  return row?.direction === "inbound" ? "inbound" : "outbound";
+}
 function lawyerFeeStatsHtml() {
-  const summary = data?.fee_allocations || { total: 0, by_lawyer: [] };
+  const summary = data?.fee_allocations || {
+    total: 0,
+    by_lawyer: [],
+    outbound_total: 0,
+    outbound_count: 0,
+    outbound_cases: 0,
+    outbound_by_lawyer: [],
+    inbound_total: 0,
+    inbound_count: 0,
+    inbound_cases: 0,
+    inbound_by_source: [],
+    net_total: 0,
+  };
   const groups = new Map();
   const get = (name) => {
     if (!groups.has(name))
@@ -759,7 +779,8 @@ function lawyerFeeStatsHtml() {
         received: 0,
         unpaid: 0,
         invUnpaid: 0,
-        allocated: 0,
+        outAmt: 0,
+        inAmt: 0,
       });
     return groups.get(name);
   };
@@ -774,21 +795,52 @@ function lawyerFeeStatsHtml() {
     row.invUnpaid =
       Math.round((row.invUnpaid + Number(fs.invoiced_unpaid || 0)) * 100) / 100;
   }
-  for (const row of summary.by_lawyer || []) {
-    get(row.lawyer).allocated = Number(row.allocated || 0);
+  for (const row of summary.outbound_by_lawyer || summary.by_lawyer || []) {
+    get(row.lawyer).outAmt = Number(row.allocated || 0);
+  }
+  for (const row of summary.inbound_by_source || []) {
+    get(row.lawyer).inAmt = Number(row.allocated || 0);
   }
   const rows = [...groups].sort(
     (a, b) =>
       b[1].signed - a[1].signed ||
-      b[1].allocated - a[1].allocated ||
+      b[1].outAmt + b[1].inAmt - (a[1].outAmt + a[1].inAmt) ||
       a[0].localeCompare(b[0], "zh-CN"),
   );
   const total = (key) =>
     Math.round(rows.reduce((sum, [, row]) => sum + row[key], 0) * 100) / 100;
+  const outTot = Number(summary.outbound_total ?? total("outAmt"));
+  const inTot = Number(summary.inbound_total ?? total("inAmt"));
+  const netTot = Number(
+    summary.net_total ?? Math.round((inTot - outTot) * 100) / 100,
+  );
+  const netStr = (netTot > 0 ? "+" : "") + money(netTot);
+  const dirStrip =
+    '<div class="fa-dir-strip">' +
+    '<button type="button" class="fa-dir-card is-out" data-action="fee-history" data-dir="outbound"><span>↗ 我分出的律师费（分给他人）</span><strong>' +
+    money(outTot) +
+    "</strong><small>" +
+    (summary.outbound_cases || 0) +
+    " 个案件 · " +
+    (summary.outbound_count || 0) +
+    " 笔（点击查看明细）</small></button>" +
+    '<button type="button" class="fa-dir-card is-in" data-action="fee-history" data-dir="inbound"><span>↙ 他人分给我的律师费（分入）</span><strong>' +
+    money(inTot) +
+    "</strong><small>" +
+    (summary.inbound_cases || 0) +
+    " 个案件 · " +
+    (summary.inbound_count || 0) +
+    " 笔（点击查看明细）</small></button>" +
+    '<button type="button" class="fa-dir-card" data-action="fee-history" data-dir=""><span>⇄ 分配净额（分入 − 分出）</span><strong>' +
+    netStr +
+    "</strong><small>" +
+    (netTot >= 0 ? "净分入大于或等于分出" : "净分出大于分入") +
+    "</small></button></div>";
   return (
-    '<section class="panel" id="lawyer-fee-stats"><div class="panel-head"><div><h2>承办律师费用统计</h2><p class="hint">案件费用按承办归属，分配律师费按实际获得分配的律师归属；分配不改变案件已收金额。</p></div><div class="page-actions"><button data-action="fee-allocation">分配律师费</button><button data-action="fee-history">分配记录</button></div></div>' +
+    '<section class="panel" id="lawyer-fee-stats"><div class="panel-head"><div><h2>承办律师费用统计</h2><p class="hint">案件费用按承办归属；律师费分配按方向分别统计“分出（分给他人）”与“分入（他人分给我）”，不改变案件已收金额。</p></div><div class="page-actions"><button data-action="fee-allocation" data-dir="outbound">分配律师费</button><button data-action="fee-history">分配记录</button></div></div>' +
+    dirStrip +
     (rows.length
-      ? '<div class="table-wrap"><table><thead><tr><th>律师</th><th>承办案件数</th><th>签约律师费</th><th>已收律师费</th><th>未付金额</th><th>开票未付金额</th><th>分配律师费</th></tr></thead><tbody>' +
+      ? '<div class="table-wrap"><table><thead><tr><th>律师</th><th>承办案件数</th><th>签约律师费</th><th>已收律师费</th><th>未付金额</th><th>开票未付金额</th><th>↗ 分出（分给TA）</th><th>↙ 分入（TA分给我）</th></tr></thead><tbody>' +
         rows
           .map(
             ([name, row]) =>
@@ -811,11 +863,19 @@ function lawyerFeeStatsHtml() {
               '</td><td class="num">' +
               money(row.invUnpaid) +
               '</td><td class="num">' +
-              (row.allocated
+              (row.outAmt
                 ? '<button class="text-button" data-action="fee-history" data-lawyer="' +
                   esc(name) +
-                  '">' +
-                  money(row.allocated) +
+                  '" data-dir="outbound">' +
+                  money(row.outAmt) +
+                  "</button>"
+                : money(0)) +
+              '</td><td class="num">' +
+              (row.inAmt
+                ? '<button class="text-button" data-action="fee-history" data-lawyer="' +
+                  esc(name) +
+                  '" data-dir="inbound">' +
+                  money(row.inAmt) +
                   "</button>"
                 : money(0)) +
               "</td></tr>",
@@ -824,7 +884,7 @@ function lawyerFeeStatsHtml() {
         '<tr><td><strong>合计</strong></td><td class="num"><strong>' +
         rows.reduce((sum, [, r]) => sum + r.n, 0) +
         "</strong></td>" +
-        ["signed", "received", "unpaid", "invUnpaid", "allocated"]
+        ["signed", "received", "unpaid", "invUnpaid", "outAmt", "inAmt"]
           .map(
             (key) =>
               '<td class="num"><strong>' + money(total(key)) + "</strong></td>",
@@ -835,13 +895,23 @@ function lawyerFeeStatsHtml() {
     "</section>"
   );
 }
-async function openFeeAllocation(preselectId = "") {
+async function openFeeAllocation(preselectId = "", defaultDirection = "outbound") {
   const allocData = await api("fee-allocations");
   const lawyers = knownLawyers();
+  const initDir = defaultDirection === "inbound" ? "inbound" : "outbound";
   openModal(
     "分配律师费",
-    '<p class="hint">选择一个或多个案件。基数默认采用各案最近一笔到账金额，也可在首次分配前填写。相同规则分别用于每个选中案件；比例按基数计算，固定金额为每案金额。同一基数可分多次，累计不超过基数。</p>' +
-      '<form id="fa-form"><label>搜索并选择案件<input id="fa-search" placeholder="搜索案件名称、客户或案号…"></label><div class="page-actions" style="margin-bottom:10px"><button type="button" id="fa-select-all">选中搜索结果</button><button type="button" id="fa-clear">清空选择</button><span id="fa-count" class="muted small">已选 0 个案件</span></div>' +
+    '<p class="hint">先选择分配方向（我分给别人 vs 别人分给我），再勾选一个或多个案件。基数默认采用各案最近一笔到账金额，也可在首次分配前手填；同一基数可分多次，累计不超过基数。</p>' +
+      '<form id="fa-form">' +
+      '<div class="fa-dir-radios">' +
+      '<label class="fa-dir-radio"><input type="radio" name="fa_direction" value="outbound"' +
+      (initDir === "outbound" ? " checked" : "") +
+      '><span><strong>↗ 分出 · 我分配给别人</strong><br><small class="muted">我方案件分给团队或外部合作律师</small></span></label>' +
+      '<label class="fa-dir-radio"><input type="radio" name="fa_direction" value="inbound"' +
+      (initDir === "inbound" ? " checked" : "") +
+      '><span><strong>↙ 分入 · 别人分配给我</strong><br><small class="muted">他人案件记入我方台账，对方律师分费用给我</small></span></label>' +
+      "</div>" +
+      '<label>搜索并选择案件<input id="fa-search" placeholder="搜索案件名称、客户或案号…"></label><div class="page-actions fa-actions-row"><button type="button" id="fa-select-all">选中搜索结果</button><button type="button" id="fa-clear">清空选择</button><span id="fa-count" class="muted small">已选 0 个案件</span></div>' +
       '<div class="fa-check-list" id="fa-case-options">' +
       (allocData.cases.length
         ? allocData.cases
@@ -865,31 +935,58 @@ async function openFeeAllocation(preselectId = "") {
                 "</span></span></label>",
             )
             .join("")
-        : '<p class="muted small" style="margin:8px">暂无可分配案件，请先新建案件。</p>') +
-      '</div><div id="fa-case-bases" style="margin-top:14px"></div>' +
-      '<div class="form-section"><h3>分配给律师</h3></div><datalist id="fa-lawyers">' +
+        : '<p class="muted small fa-empty-note">暂无可分配案件，请先新建案件。</p>') +
+      '</div><div id="fa-case-bases" class="fa-mt-14"></div>' +
+      '<datalist id="fa-lawyers">' +
       lawyers.map((name) => '<option value="' + esc(name) + '">').join("") +
-      '</datalist><div id="fa-recipients"></div><div style="margin-bottom:14px"><button type="button" id="fa-add-recipient">＋ 添加律师</button></div>' +
-      '<label>备注<input name="note" placeholder="选填，如：2026年第一笔顾问费提成"></label><div id="fa-preview"></div><p class="form-error" role="alert" hidden></p><div class="form-actions"><button type="button" data-action="close-modal">取消</button><button class="primary" type="submit">预览分配</button></div></form>',
+      "</datalist>" +
+      '<div id="fa-outbound-box"><div class="form-section"><h3>分配给哪位律师（接收方）</h3></div><div id="fa-recipients"></div><div class="fa-mb-14"><button type="button" id="fa-add-recipient">＋ 添加接收律师</button></div></div>' +
+      '<div id="fa-inbound-box" hidden><div class="form-section"><h3>来源律师（谁分给我）与分入金额</h3></div><div class="fa-inbound-grid"><label>来源律师姓名<input name="fa_from_lawyer" list="fa-lawyers" maxlength="40" placeholder="填写分给我的对方律师"></label><label>方式<select name="fa_in_kind"><option value="rate">比例（%）</option><option value="amount">金额（元／案）</option></select></label><label>比例／金额<input name="fa_in_value" type="number" min="0.01" step="0.01" max="100"></label></div></div>' +
+      '<label class="fa-mt-14">备注<input name="note" placeholder="选填，如：2026年第一笔顾问费提成"></label><div id="fa-preview"></div><p class="form-error" role="alert" hidden></p><div class="form-actions"><button type="button" data-action="close-modal">取消</button><button class="primary" type="submit">预览分配</button></div></form>',
   );
   const formEl = $("#fa-form"),
     selected = new Map(),
     recipients = $("#fa-recipients"),
+    outBox = $("#fa-outbound-box"),
+    inBox = $("#fa-inbound-box"),
     basesEl = $("#fa-case-bases"),
     previewEl = $("#fa-preview"),
     errorEl = formEl.querySelector(".form-error"),
     submitBtn = formEl.querySelector("button[type=submit]");
   let previewKey = null;
   const requestId = crypto.randomUUID();
+  const getDir = () =>
+    formEl.querySelector('input[name="fa_direction"]:checked')?.value ||
+    "outbound";
   const invalidate = () => {
     previewKey = null;
     previewEl.innerHTML = "";
     submitBtn.textContent = "预览分配";
   };
+  const syncDirUi = () => {
+    const isOut = getDir() === "outbound";
+    outBox.hidden = !isOut;
+    inBox.hidden = isOut;
+    outBox.querySelectorAll("input,select").forEach((el) => {
+      el.disabled = !isOut;
+    });
+    inBox.querySelectorAll("input,select").forEach((el) => {
+      el.disabled = isOut;
+      if (!isOut && el.name !== "fa_in_kind") el.required = true;
+      else el.required = false;
+    });
+    invalidate();
+  };
+  formEl.elements.fa_in_kind.onchange = () => {
+    const inp = formEl.elements.fa_in_value;
+    if (formEl.elements.fa_in_kind.value === "rate") inp.max = "100";
+    else inp.removeAttribute("max");
+    invalidate();
+  };
   const renderBases = () => {
     $("#fa-count").textContent = "已选 " + selected.size + " 个案件";
     basesEl.innerHTML = selected.size
-      ? '<div class="table-wrap" style="max-height:240px"><table><thead><tr><th>案件名称</th><th>到账／分配基数</th><th>基数金额（元）</th><th>已分配</th><th>剩余可分</th></tr></thead><tbody>' +
+      ? '<div class="table-wrap fa-scroll-md"><table><thead><tr><th>案件名称</th><th>到账／分配基数</th><th>基数金额（元）</th><th>已分配</th><th>剩余可分</th></tr></thead><tbody>' +
         [...selected]
           .map(([id, item]) => {
             const c = allocData.cases.find((x) => x.id === id),
@@ -924,13 +1021,13 @@ async function openFeeAllocation(preselectId = "") {
                     "</option>",
                 )
                 .join("") +
-              '</select></td><td><input data-fa-base="' +
+              '</select></td><td><input class="fa-base-input" data-fa-base="' +
               esc(id) +
               '" type="number" min="0.01" step="0.01" required value="' +
               esc(item.base_amount ?? "") +
               '"' +
               (basis.locked ? " readonly" : "") +
-              ' style="min-width:110px;margin-top:0"></td><td class="num">' +
+              '></td><td class="num">' +
               money(basis.allocated) +
               '</td><td class="num" data-fa-remaining="' +
               esc(id) +
@@ -1052,12 +1149,14 @@ async function openFeeAllocation(preselectId = "") {
     const row = document.createElement("div");
     row.className = "fa-recipient-row";
     row.innerHTML =
-      '<label>律师姓名<input data-fa-name list="fa-lawyers" required maxlength="40" value="' +
+      '<label>接收律师姓名<input data-fa-name list="fa-lawyers" required maxlength="40" value="' +
       esc(defaultName) +
-      '" placeholder="选择或填写律师姓名"></label><label>方式<select data-fa-kind><option value="rate">比例（%）</option><option value="amount">金额（元／案）</option></select></label><label>比例／金额<input data-fa-value type="number" required min="0.01" step="0.01" max="100"></label><button type="button" title="移除此律师">×</button>';
+      '" placeholder="选择或填写合作律师"></label><label>方式<select data-fa-kind><option value="rate">比例（%）</option><option value="amount">金额（元／案）</option></select></label><label>比例／金额<input data-fa-value type="number" required min="0.01" step="0.01" max="100"></label><button type="button" title="移除此律师">×</button>';
     row.querySelector("button").onclick = () => {
-      row.remove();
-      invalidate();
+      if (recipients.children.length > 1) {
+        row.remove();
+        invalidate();
+      }
     };
     row.querySelector("select").onchange = () => {
       const inp = row.querySelector("[data-fa-value]");
@@ -1066,10 +1165,14 @@ async function openFeeAllocation(preselectId = "") {
       invalidate();
     };
     recipients.append(row);
-    invalidate();
+    syncDirUi();
   };
   $("#fa-add-recipient").onclick = () => addRecipient();
   addRecipient();
+  formEl
+    .querySelectorAll('input[name="fa_direction"]')
+    .forEach((r) => (r.onchange = syncDirUi));
+  syncDirUi();
   formEl.addEventListener("input", (ev) => {
     if (ev.target.id !== "fa-search") invalidate();
   });
@@ -1081,21 +1184,45 @@ async function openFeeAllocation(preselectId = "") {
     submitBtn.disabled = true;
     errorEl.hidden = true;
     try {
-      const payload = {
-        request_id: requestId,
-        cases: [...selected.values()],
-        recipients: [...recipients.children].map((row) => ({
-          name: row.querySelector("[data-fa-name]").value.trim(),
-          kind: row.querySelector("[data-fa-kind]").value,
-          value: row.querySelector("[data-fa-value]").value,
-        })),
-        note: formEl.elements.note.value,
-      };
+      const dir = getDir();
+      const payload =
+        dir === "inbound"
+          ? {
+              request_id: requestId,
+              direction: "inbound",
+              from_lawyer: formEl.elements.fa_from_lawyer.value.trim(),
+              cases: [...selected.values()],
+              recipients: [
+                {
+                  name: "本机",
+                  kind: formEl.elements.fa_in_kind.value,
+                  value: formEl.elements.fa_in_value.value,
+                },
+              ],
+              note: formEl.elements.note.value,
+            }
+          : {
+              request_id: requestId,
+              direction: "outbound",
+              cases: [...selected.values()],
+              recipients: [...recipients.children].map((row) => ({
+                name: row.querySelector("[data-fa-name]").value.trim(),
+                kind: row.querySelector("[data-fa-kind]").value,
+                value: row.querySelector("[data-fa-value]").value,
+              })),
+              note: formEl.elements.note.value,
+            };
       const key = JSON.stringify(payload);
       if (previewKey !== key) {
         const result = await api("fee-allocations/preview", "POST", payload);
+        const dirBadge =
+          result.direction === "inbound"
+            ? '<span class="fa-dir-pill is-in">↙ 分入（他人分给我）</span>'
+            : '<span class="fa-dir-pill is-out">↗ 分出（我分给他人）</span>';
         previewEl.innerHTML =
-          '<div class="form-section"><h3>本次分配预览</h3></div><div class="table-wrap" style="max-height:220px;margin-bottom:10px"><table><thead><tr><th>案件</th><th>律师</th><th>基数</th><th>方式</th><th>分配金额</th></tr></thead><tbody>' +
+          '<div class="form-section"><h3>本次分配预览 ' +
+          dirBadge +
+          '</h3></div><div class="table-wrap fa-scroll-sm"><table><thead><tr><th>案件</th><th>往来方向</th><th>基数</th><th>方式</th><th>分配金额</th></tr></thead><tbody>' +
           result.plans
             .map((plan) =>
               plan.splits
@@ -1104,7 +1231,7 @@ async function openFeeAllocation(preselectId = "") {
                     "<tr><td>" +
                     esc(plan.case_name) +
                     "</td><td>" +
-                    esc(split.name) +
+                    esc((plan.from_lawyer || "本机") + " → " + split.name) +
                     '</td><td class="num">' +
                     money(plan.base_amount) +
                     "</td><td>" +
@@ -1120,7 +1247,8 @@ async function openFeeAllocation(preselectId = "") {
                 .join(""),
             )
             .join("") +
-          '</tbody></table></div><p><strong>合计分配 ' +
+          '</tbody></table></div><p><strong>合计' +
+          (result.direction === "inbound" ? "分入 " : "分出 ") +
           money(result.total) +
           "，共 " +
           result.cases +
@@ -1135,7 +1263,9 @@ async function openFeeAllocation(preselectId = "") {
       notice(
         result.unchanged
           ? "该批次已保存，未重复分配"
-          : "律师费已分配，共 " +
+          : (result.direction === "inbound"
+              ? "他人分入律师费已登记，共 "
+              : "律师费已分出，共 ") +
               result.cases +
               " 个案件，合计 " +
               money(result.total),
@@ -1149,80 +1279,214 @@ async function openFeeAllocation(preselectId = "") {
     }
   });
 }
-async function openFeeAllocationHistory(filterName = "") {
+async function openFeeAllocationHistory(filterName = "", filterDir = "") {
   const allocData = await api("fee-allocations");
-  let records = (allocData.records || []).slice().reverse();
-  if (filterName)
-    records = records.filter((row) => row.recipient === filterName);
+  let curDir = filterDir || "";
+  const allRows = (allocData.records || []).slice().reverse();
   openModal(
     "律师费分配记录" + (filterName ? " · " + filterName : ""),
-    '<label>搜索案件、案号或律师<input id="fa-history-search" placeholder="输入关键词筛选分配记录…"></label>' +
-      (records.length
-        ? '<div class="table-wrap" style="max-height:420px"><table><thead><tr><th>案件</th><th>到账／基数</th><th>获得分配的律师</th><th>方式</th><th>分配金额</th><th>登记时间</th><th>状态</th></tr></thead><tbody>' +
-          records
-            .map(
-              (row) =>
-                '<tr data-fa-history="' +
-                esc(row.id) +
-                '"><td><strong>' +
-                esc(row.case_name) +
-                '</strong><span class="sub">' +
-                esc(row.case_code) +
-                (row.note ? " · " + esc(row.note) : "") +
-                "</span></td><td>" +
-                esc(row.source_period || row.source_date || "手填基数") +
-                '<span class="sub">基数 ' +
-                money(row.base_amount) +
-                "</span></td><td><strong>" +
-                esc(row.recipient) +
-                "</strong></td><td>" +
-                esc(row.kind === "rate" ? row.value + "%" : "固定金额") +
-                '</td><td class="num"><strong>' +
-                money(row.amount) +
-                '</strong></td><td><span class="small muted">' +
-                time(row.at) +
-                "</span></td><td>" +
-                (row.voided_at
-                  ? '<span class="muted small">已撤销：' +
-                    esc(row.void_reason) +
-                    "</span>"
-                  : '<button type="button" class="text-button danger" data-fa-void="' +
-                    esc(row.id) +
-                    '">撤销</button>') +
-                "</td></tr>",
-            )
-            .join("") +
-          "</tbody></table></div>"
-        : '<p class="muted small">暂无分配记录。</p>') +
-      '<div class="form-actions"><button type="button" data-action="close-modal">关闭</button><button type="button" class="primary" data-action="fee-allocation">＋ 新增分配</button></div>',
+    '<div class="fa-history-bar">' +
+      '<div class="fa-dir-tabs">' +
+      '<button type="button" data-fa-dir="">全部</button>' +
+      '<button type="button" data-fa-dir="outbound">↗ 分出（分给他人）</button>' +
+      '<button type="button" data-fa-dir="inbound">↙ 分入（他人分给我）</button>' +
+      "</div>" +
+      '<div class="fa-history-tools">' +
+      '<input class="fa-history-search" id="fa-history-search" placeholder="搜索案件、案号或律师…">' +
+      '<button type="button" id="fa-history-export">⇱ 导出 Excel</button>' +
+      '<button type="button" class="primary" id="fa-history-add">＋ 新增分配</button>' +
+      "</div>" +
+      "</div>" +
+      '<p id="fa-history-totals" class="small muted fa-history-totals"></p>' +
+      '<div class="table-wrap fa-scroll-lg"><table><thead><tr><th>案件</th><th>方向 ／ 往来律师</th><th>到账／基数</th><th>分配金额</th><th>登记时间</th><th>状态</th></tr></thead><tbody id="fa-history-tbody"></tbody></table></div>' +
+      '<div class="form-actions"><button type="button" data-action="close-modal">关闭</button></div>',
   );
-  const searchInput = $("#fa-history-search");
-  if (searchInput) {
-    searchInput.oninput = () => {
-      const q = searchInput.value.toLowerCase().trim();
-      document.querySelectorAll("[data-fa-history]").forEach((row) => {
-        row.hidden = !row.textContent.toLowerCase().includes(q);
-      });
-    };
-  }
-  document.querySelectorAll("[data-fa-void]").forEach((btn) => {
-    btn.onclick = () => {
-      const id = btn.dataset.faVoid;
-      form(
-        "撤销分配记录",
-        '<p class="hint">撤销后保留原记录痕迹、释放对应基数可分配额度，并自动更新承办律师费用统计。</p><label>撤销原因<textarea name="reason" required placeholder="例如：比例调整，重新核算分配"></textarea></label>',
-        async (f) => {
-          await api("fee-allocations/" + id + "/void", "POST", {
-            reason: f.elements.reason.value,
-          });
-          await refresh();
-          notice("分配已撤销");
-          await openFeeAllocationHistory(filterName);
-        },
-        "确认撤销",
-      );
+  const matchRows = () => {
+    const q = ($("#fa-history-search")?.value || "").toLowerCase().trim();
+    return allRows.filter((row) => {
+      const dir = faEffectiveDir(row);
+      if (curDir && dir !== curDir) return false;
+      if (filterName) {
+        const hit =
+          dir === "inbound"
+            ? (row.from_lawyer || row.by) === filterName ||
+              row.recipient === filterName
+            : row.recipient === filterName;
+        if (!hit) return false;
+      }
+      if (
+        q &&
+        ![
+          row.case_name,
+          row.case_code,
+          row.from_lawyer,
+          row.recipient,
+          row.by,
+          row.note,
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      )
+        return false;
+      return true;
+    });
+  };
+  const renderRows = () => {
+    document
+      .querySelectorAll("[data-fa-dir]")
+      .forEach((b) => b.classList.toggle("selected", b.dataset.faDir === curDir));
+    const matched = matchRows();
+    let outSum = 0,
+      inSum = 0;
+    for (const r of matched) {
+      if (r.voided_at) continue;
+      if (faEffectiveDir(r) === "inbound")
+        inSum = Math.round((inSum + Number(r.amount || 0)) * 100) / 100;
+      else outSum = Math.round((outSum + Number(r.amount || 0)) * 100) / 100;
+    }
+    const net = Math.round((inSum - outSum) * 100) / 100;
+    $("#fa-history-totals").innerHTML =
+      "当前筛选有效记录：<strong>↗ 分出 " +
+      money(outSum) +
+      "</strong>　｜　<strong>↙ 分入 " +
+      money(inSum) +
+      "</strong>　｜　净额 <strong>" +
+      (net > 0 ? "+" : "") +
+      money(net) +
+      "</strong>";
+    $("#fa-history-tbody").innerHTML = matched.length
+      ? matched
+          .map((row) => {
+            const isIn = faEffectiveDir(row) === "inbound";
+            const flow =
+              (row.from_lawyer || row.case_lawyer || row.by || "本机") +
+              " → " +
+              row.recipient;
+            return (
+              '<tr data-fa-history="' +
+              esc(row.id) +
+              '"><td><strong>' +
+              esc(row.case_name) +
+              '</strong><span class="sub">' +
+              esc(row.case_code) +
+              (row.note ? " · " + esc(row.note) : "") +
+              '</span></td><td><span class="fa-dir-pill ' +
+              (isIn ? "is-in" : "is-out") +
+              '">' +
+              (isIn ? "↙ 分入" : "↗ 分出") +
+              '</span><span class="sub">' +
+              esc(flow) +
+              "</span></td><td>" +
+              esc(row.source_period || row.source_date || "手填基数") +
+              '<span class="sub">基数 ' +
+              money(row.base_amount) +
+              '</span></td><td class="num"><strong>' +
+              money(row.amount) +
+              '</strong><span class="sub">' +
+              esc(row.kind === "rate" ? row.value + "%" : "固定金额") +
+              '</span></td><td><span class="small muted">' +
+              time(row.at) +
+              "</span></td><td>" +
+              (row.voided_at
+                ? '<span class="muted small">已撤销：' +
+                  esc(row.void_reason) +
+                  "</span>"
+                : '<button type="button" class="text-button danger" data-fa-void="' +
+                  esc(row.id) +
+                  '">撤销</button>') +
+              "</td></tr>"
+            );
+          })
+          .join("")
+      : '<tr><td colspan="6" class="muted small">当前筛选条件下暂无分配记录。</td></tr>';
+    document.querySelectorAll("[data-fa-void]").forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.faVoid;
+        form(
+          "撤销分配记录",
+          '<p class="hint">撤销后保留原记录痕迹、释放对应基数可分配额度，并自动更新承办律师费用统计。</p><label>撤销原因<textarea name="reason" required placeholder="例如：比例调整，重新核算分配"></textarea></label>',
+          async (f) => {
+            await api("fee-allocations/" + id + "/void", "POST", {
+              reason: f.elements.reason.value,
+            });
+            await refresh();
+            notice("分配已撤销");
+            await openFeeAllocationHistory(filterName, curDir);
+          },
+          "确认撤销",
+        );
+      };
+    });
+  };
+  document.querySelectorAll("[data-fa-dir]").forEach((b) => {
+    b.onclick = () => {
+      curDir = b.dataset.faDir;
+      renderRows();
     };
   });
+  $("#fa-history-add").onclick = () =>
+    openFeeAllocation("", curDir || "outbound").catch((e) => notice(e.message));
+  $("#fa-history-search").oninput = renderRows;
+  $("#fa-history-export").onclick = () => {
+    try {
+      const matched = matchRows().filter((r) => !r.voided_at);
+      if (!matched.length) {
+        notice("当前筛选条件下没有有效分配记录可导出");
+        return;
+      }
+      const headers = [
+        "案件名称",
+        "内部案号",
+        "方向",
+        "来源律师",
+        "接收律师",
+        "结算期/收款日",
+        "分配基数（元）",
+        "分配方式",
+        "比例/定额",
+        "分配金额（元）",
+        "备注",
+        "登记人",
+        "登记时间",
+      ];
+      const rows = matched.map((r) => {
+        const isIn = faEffectiveDir(r) === "inbound";
+        return [
+          r.case_name || "",
+          r.case_code || "",
+          isIn ? "分入" : "分出",
+          r.from_lawyer || r.case_lawyer || r.by || "本机",
+          r.recipient || "",
+          r.source_period || r.source_date || "",
+          Number(r.base_amount || 0),
+          r.kind === "rate" ? "比例" : "定额",
+          r.kind === "rate" ? r.value + "%" : Number(r.value || 0),
+          Number(r.amount || 0),
+          r.note || "",
+          r.by || "",
+          r.at || "",
+        ];
+      });
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      ws["!cols"] = headers.map((h) => ({
+        wch: h.includes("案件") || h.includes("备注") ? 28 : 15,
+      }));
+      XLSX.utils.book_append_sheet(wb, ws, "分配记录");
+      saveWorkbook(
+        wb,
+        "律师费分配记录-" +
+          (filterName ? filterName + "-" : "") +
+          today() +
+          ".xlsx",
+      );
+      notice("分配记录已导出：" + rows.length + " 笔");
+    } catch (e) {
+      notice(e.message);
+    }
+  };
+  renderRows();
 }
 function aiKeyLinksHtml(providers, activeProviderId) {
   return providers
@@ -2583,8 +2847,10 @@ const actions = {
     const c = findCase(el.dataset.id);
     openModal("费用说明", '<p class="pre">' + esc(c.fee_note) + "</p>");
   },
-  "fee-allocation": (el) => openFeeAllocation(el.dataset.id || ""),
-  "fee-history": (el) => openFeeAllocationHistory(el.dataset.lawyer || ""),
+  "fee-allocation": (el) =>
+    openFeeAllocation(el.dataset.id || "", el.dataset.dir || "outbound"),
+  "fee-history": (el) =>
+    openFeeAllocationHistory(el.dataset.lawyer || "", el.dataset.dir || ""),
   "filter-lawyer": async (el) => {
     filter = {
       track: "",

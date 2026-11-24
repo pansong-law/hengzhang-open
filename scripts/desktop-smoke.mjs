@@ -350,6 +350,7 @@ try {
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   await expect(page.getByRole("heading", { name: "按业务类型" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "承办律师费用统计" })).toBeVisible();
+  await expect(page.locator("#lawyer-fee-stats .fa-dir-strip")).toBeVisible();
   await page.locator("#lawyer-fee-stats").getByRole("button", { name: "分配律师费", exact: true }).click();
   await expect(page.getByRole("heading", { name: "分配律师费" })).toBeVisible();
   await page.locator("#fa-case-options input[type=checkbox]").first().check();
@@ -357,9 +358,33 @@ try {
   await page.locator("[data-fa-value]").fill("30");
   await page.getByRole("button", { name: "预览分配", exact: true }).click();
   await expect(page.locator("#fa-preview")).toContainText("本次分配预览");
+  await expect(page.locator("#fa-preview")).toContainText("分出");
   await page.getByRole("button", { name: "保存分配", exact: true }).click();
   await expect(page.locator("#modal")).not.toBeVisible();
   await expect(page.locator("#lawyer-fee-stats")).toContainText("合作律师甲");
+  await page.locator("#lawyer-fee-stats").getByRole("button", { name: "分配律师费", exact: true }).click();
+  await page.locator('input[name="fa_direction"][value="inbound"]').check();
+  await page.locator("#fa-case-options input[type=checkbox]").first().check();
+  await page.locator('input[name="fa_from_lawyer"]').fill("来源律师乙");
+  await page.locator('select[name="fa_in_kind"]').selectOption("rate");
+  await page.locator('input[name="fa_in_value"]').fill("20");
+  await page.getByRole("button", { name: "预览分配", exact: true }).click();
+  await expect(page.locator("#fa-preview")).toContainText("分入");
+  await page.getByRole("button", { name: "保存分配", exact: true }).click();
+  await expect(page.locator("#modal")).not.toBeVisible();
+  await expect(page.locator("#lawyer-fee-stats")).toContainText("来源律师乙");
+  await page.locator("#lawyer-fee-stats").getByRole("button", { name: "分配记录", exact: true }).click();
+  await expect(page.locator("#fa-history-tbody")).toContainText("合作律师甲");
+  await expect(page.locator("#fa-history-tbody")).toContainText("来源律师乙");
+  await page.locator('[data-fa-dir="inbound"]').click();
+  await expect(page.locator("#fa-history-tbody")).toContainText("来源律师乙");
+  await expect(page.locator("#fa-history-tbody")).not.toContainText("合作律师甲");
+  await page.locator('[data-fa-dir=""]').click();
+  const beforeAllocExport = await downloadCount();
+  await page.locator("#fa-history-export").click();
+  await expect.poll(downloadCount).toBe(beforeAllocExport + 1);
+  await page.locator("#close-modal").click();
+  await expect(page.locator("#modal")).not.toBeVisible();
   await page.screenshot({
     path: path.join(workspace, "费用统计.png"),
     fullPage: true,
