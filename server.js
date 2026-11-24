@@ -26,6 +26,7 @@ import {
 } from "./lib/ledger.js";
 import {
   CASE_LEDGER_FIELDS,
+  COMBINED_LEDGER_TEMPLATE,
   businessLedgerSheets,
 } from "./lib/case-ledger-fields.js";
 import { LITIGATION_STAGES } from "./lib/litigation-stage.js";
@@ -37,6 +38,15 @@ import {
   mutateQuickLinks,
   hasQuickLinkUrl,
 } from "./lib/quick-links.js";
+import {
+  getLegalCalcPayload,
+  mutateLegalCalc,
+  generateLegalCalcToolWithAi,
+  SANDBOX_CSP,
+  SANDBOX_RUNNER_HTML,
+  TOOLS_META_KEY as LC_TOOLS_META_KEY,
+  ORDER_META_KEY as LC_ORDER_META_KEY,
+} from "./lib/legal-calc.js";
 import {
   extractContractText,
   MAX_CONTRACT_CHARS,
@@ -65,6 +75,8 @@ const MIME = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".xlsx":
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 const hash = (data) =>
   createHash("sha256").update(JSON.stringify(data)).digest("hex");
@@ -379,6 +391,54 @@ export function createLocalApp({
           });
           return json(res, 200, payload);
         }
+        if (p === "/api/legal-calc" && method === "GET")
+          return json(
+            res,
+            200,
+            getLegalCalcPayload(store.db.meta, aiStore.publicView()),
+          );
+        if (p === "/api/legal-calc" && method === "POST") {
+          const input = await body(req);
+          const payload = store.update((d) => {
+            const result = mutateLegalCalc(d.meta, input, aiStore.publicView());
+            if (result.toolsChanged)
+              d.meta[LC_TOOLS_META_KEY] = result.toolsValue;
+            if (result.ordersChanged)
+              d.meta[LC_ORDER_META_KEY] = result.ordersValue;
+            return result.payload;
+          });
+          return json(res, 200, payload);
+        }
+        if (p === "/api/legal-calc/ai-generate" && method === "POST") {
+          const input = await body(req);
+          const resolved = aiStore.resolve();
+          try {
+            const tool = await generateLegalCalcToolWithAi(input, resolved, {
+              fetchImpl: aiFetch,
+            });
+            return json(res, 200, {
+              ok: true,
+              tool,
+              model: resolved.model,
+            });
+          } catch (err) {
+            const msg = String(err?.message || "AI 生成小工具失败").replaceAll(
+              resolved.api_key || "__NO_KEY__",
+              "[已隐藏]",
+            );
+            throw invalid(msg, err?.status || 502);
+          }
+        }
+        if (p === "/api/legal-calc/sandbox-runner" && method === "GET") {
+          res.setHeader("X-Frame-Options", "SAMEORIGIN");
+          res.setHeader("Content-Security-Policy", SANDBOX_CSP);
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          res.end(SANDBOX_RUNNER_HTML);
+          return;
+        }
         if (p === "/api/preferences" && method === "PUT") {
           const input = await body(req);
           if (
@@ -475,7 +535,10 @@ export function createLocalApp({
           });
         }
         if (p === "/api/templates" && method === "GET")
-          return json(res, 200, { templates: CASE_LEDGER_FIELDS });
+          return json(res, 200, {
+            templates: CASE_LEDGER_FIELDS,
+            combined: COMBINED_LEDGER_TEMPLATE,
+          });
         if (p === "/api/backups" && method === "GET")
           return json(res, 200, {
             backups: store.backups(),

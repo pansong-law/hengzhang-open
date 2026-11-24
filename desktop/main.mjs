@@ -250,9 +250,16 @@ else {
         });
         ipcMain.handle("hengzhang:updates:install", async (event) => {
           trusted(event);
-          const error = await shell.openPath(updates.getInstallerPath());
-          if (error) throw Error("未能打开更新安装包");
-          return true;
+          const result = await updates.installInstaller({
+            onBeforeQuit: () => {
+              setTimeout(() => app.quit(), 120);
+            },
+          });
+          if (result.mode === "open-dmg") {
+            const error = await shell.openPath(result.dmgPath);
+            if (error) throw Error("未能打开更新安装包");
+          }
+          return result.mode;
         });
         ipcMain.handle("hengzhang:updates:release-page", async (event) => {
           trusted(event);

@@ -29,7 +29,11 @@ const run = (command, args, options = {}) =>
   }).trim();
 const tag = "v" + pkg.version,
   dmg = path.join(root, "dist", "Hengzhang-" + pkg.version + "-universal.dmg");
-const app = path.join(root, "dist", "mac-universal", "衡账.app"),
+const appCandidates = [
+  path.join(root, "dist", "mac-arm64", "衡账.app"),
+  path.join(root, "dist", "mac-universal", "衡账.app"),
+];
+const app = appCandidates.find((p) => fs.existsSync(p)) || appCandidates[0],
   archive = path.join(app, "Contents/Resources/app.asar");
 if (!fs.existsSync(dmg) || !fs.existsSync(archive))
   throw Error("请先构建 Mac 通用版");

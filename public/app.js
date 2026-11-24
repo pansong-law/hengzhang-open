@@ -42,6 +42,7 @@ const names = (value) => [
 let data = null,
   view = "dash",
   templates = null,
+  combinedTemplate = null,
   backupInfo = null,
   importTrack = "litigation";
 let filter = { track: "", q: "", field: "all", status: "在办", finance: "" };
@@ -2317,7 +2318,12 @@ async function deleteCollection(id, receipt) {
   );
 }
 async function getTemplates() {
-  return templates || (templates = (await api("templates")).templates);
+  if (!templates) {
+    const res = await api("templates");
+    templates = res.templates;
+    combinedTemplate = res.combined || null;
+  }
+  return templates;
 }
 function saveWorkbook(wb, name) {
   XLSX.writeFile(wb, name, { bookType: "xlsx" });
@@ -2351,9 +2357,17 @@ async function exportLedger(all = false) {
 }
 async function importDialog() {
   const specs = await getTemplates();
+  const combinedHtml = combinedTemplate
+    ? '<div class="setting-row setting-row-combined"><div><strong>' +
+      esc(combinedTemplate.name) +
+      "（顾问 + 专项 + 诉讼）</strong><p>" +
+      combinedTemplate.fields.length +
+      ' 个字段 · 一张表汇总导入三类案件，按列分组着色并严格校验专属字段；同样兼容衡账网络版综合模板</p></div><div class="page-actions"><button data-action="download-combined">下载综合模板</button><button class="primary" data-action="choose-import" data-track="combined">选择综合文件</button></div></div>'
+    : "";
   openModal(
     "导入 Excel 台账",
-    '<p class="hint">选择案件类型，下载模板填写后导入。相同内部案号会合并更新非空字段；没有内部案号的记录会新建。</p><div class="notice-box">先预览再导入。需要保留导入前的数据时，可先在“设置与备份”手动导出备份。Excel 导出表也可重新导入；仅读取第一张工作表。金额计算方式为“自动”时忽略金额列并恢复自动计算；要登记固定金额，请将计算方式改为“手填”并填写金额。</div>' +
+    '<p class="hint">可使用「综合案件模板」一张表汇总导入顾问、专项、诉讼案件，也可按单一案件类型分别下载模板导入。相同内部案号会合并更新非空字段；没有内部案号的记录会新建。</p><div class="notice-box">先预览再导入。需要保留导入前的数据时，可先在“设置与备份”手动导出备份。Excel 导出表也可重新导入；仅读取第一张工作表。金额计算方式为“自动”时忽略金额列并恢复自动计算；要登记固定金额，请将计算方式改为“手填”并填写金额。</div>' +
+      combinedHtml +
       Object.entries(specs)
         .map(
           ([track, spec]) =>
@@ -2411,6 +2425,8 @@ $("#import-file").onchange = async (e) => {
       aliases = {};
     for (const spec of Object.values(specs))
       for (const f of spec.fields) aliases[f.label] = f.key;
+    if (combinedTemplate?.fields)
+      for (const f of combinedTemplate.fields) aliases[f.label] = f.key;
     Object.assign(aliases, {
       合同金额: "contract_amount",
       累计已收款: "collected_amount",
@@ -2421,12 +2437,18 @@ $("#import-file").onchange = async (e) => {
       "客户 / 当事人": "client",
       签约律师费: "contract_amount",
       费用说明: "fee_note",
+      服务阶段: "service_stages",
+      "服务阶段（仅诉讼）": "service_stages",
+      "服务期限（仅顾问）": "service_period",
     });
     const headers = (grid.shift() || []).map((h) => String(h).trim());
     if (!headers.some((h) => aliases[h] && aliases[h] !== "track"))
       throw Error("未识别到台账表头，请使用导入模板");
+    const isCombined =
+      importTrack === "combined" ||
+      headers.some((h) => /（仅(?:顾问|专项|诉讼)）/.test(h));
     const rows = grid.map((cells) => {
-      const row = { track: importTrack };
+      const row = isCombined ? { require_track: true } : { track: importTrack };
       headers.forEach((label, i) => {
         const key = aliases[label];
         if (!key) return;
@@ -2443,6 +2465,12 @@ $("#import-file").onchange = async (e) => {
       return row;
     });
     const preview = await api("cases/import-preview", "POST", { rows });
+    const trackCounts = {};
+    for (const rec of preview.records || [])
+      trackCounts[rec.track] = (trackCounts[rec.track] || 0) + 1;
+    const trackSummary = Object.entries(trackCounts)
+      .map(([t, n]) => (data.tracks[t] || t) + " " + n + " 件")
+      .join(" · ");
     form(
       "预览导入 · " + file.name,
       '<div class="preview-counts"><div><strong>' +
@@ -2451,7 +2479,11 @@ $("#import-file").onchange = async (e) => {
         preview.merged +
         "</strong>合并行数</div><div><strong>" +
         preview.incomplete +
-        '</strong>内部案号待补充</div></div><p class="hint">合并以内部案号为准，空白字段保留原值；金额计算方式为“自动”时恢复自动计算。以下展示前 20 个发生变化的案件。</p><div class="table-wrap"><table><thead><tr><th>内部案号</th><th>类型</th><th>客户</th><th>签约律师费</th></tr></thead><tbody>' +
+        '</strong>内部案号待补充</div></div>' +
+        (trackSummary
+          ? '<p class="hint">涉及业务线：' + esc(trackSummary) + "</p>"
+          : "") +
+        '<p class="hint">合并以内部案号为准，空白字段保留原值；金额计算方式为“自动”时恢复自动计算。以下展示前 20 个发生变化的案件。</p><div class="table-wrap"><table><thead><tr><th>内部案号</th><th>类型</th><th>客户</th><th>签约律师费</th></tr></thead><tbody>' +
         preview.records
           .slice(0, 20)
           .map(
@@ -2595,6 +2627,12 @@ const actions = {
   "export-all": () => exportLedger(true),
   import: importDialog,
   template: (el) => downloadTemplate(el.dataset.track),
+  "download-combined": () => {
+    const a = document.createElement("a");
+    a.href = "/templates/all-cases-template.xlsx";
+    a.download = combinedTemplate?.file || "all-cases-template.xlsx";
+    a.click();
+  },
   "choose-import": (el) => {
     importTrack = el.dataset.track;
     $("#import-file").click();

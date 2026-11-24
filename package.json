@@ -1,6 +1,6 @@
 {
   "name": "hengzhang-local",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "description": "衡账 · 个人案件与律师费管理（Mac 本地版）",
@@ -11,7 +11,7 @@
   "scripts": {
     "start": "electron .",
     "dev:server": "node server.js",
-    "test": "node --test scripts/local.test.mjs scripts/updates.test.mjs scripts/release-snapshot.test.mjs",
+    "test": "node --test scripts/local.test.mjs scripts/legal-calc.test.mjs scripts/updates.test.mjs scripts/release-snapshot.test.mjs",
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "pack:mac": "electron-builder --mac --dir --arm64 && node scripts/slim-mac-dist.mjs --pack-only",
     "dist:mac": "electron-builder --mac dmg --arm64 && node scripts/slim-mac-dist.mjs",

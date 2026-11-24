@@ -597,6 +597,111 @@ try {
   await expect
     .poll(() => application.evaluate(() => globalThis.updateDownloadCalls))
     .toContain("https://rmfyalk.court.gov.cn/");
+  // Verify in-app Legal Calc overlay (8 built-ins incl. VAT, AI-first editor, isolated sandbox under strict CSP)
+  const cspErrors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") cspErrors.push(m.text());
+  });
+  await page.locator("#legal-calc-trigger").click();
+  await expect(page.locator("#legal-calc-backdrop")).toBeVisible();
+  await expect(page.locator(".lc-card")).toHaveCount(8);
+  await page.locator('.lc-card[data-tool="vat"]').click();
+  await page.locator('.lc-form input[name="gross"]').fill("106000");
+  await expect(page.locator(".lc-result")).toContainText("100,000.00 元");
+  await page.locator('.lc-form input[name="withSur"]').check();
+  await expect(page.locator(".lc-result")).toContainText("720.00 元");
+  await page.locator('label:has(input[name="vmode"][value="fromNet"])').click();
+  await page.locator('.lc-form select[name="ratePreset"]').selectOption("13");
+  await page.locator('.lc-form input[name="net"]').fill("100000");
+  await expect(page.locator(".lc-result")).toContainText("113,000.00 元");
+  await page.locator('label:has(input[name="vmode"][value="payable"])').click();
+  await page.locator('.lc-form input[name="outAmt"]').fill("1060000");
+  await page.locator('.lc-form input[name="inAmt"]').fill("113000");
+  await expect(page.locator(".lc-result")).toContainText("47,000.00 元");
+  await page.route("**/api/legal-calc/ai-generate", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        model: "mock-local-ai",
+        tool: {
+          title: "AI股权个税速算",
+          desc: "由单机版 AI 生成的股权转让个税测算",
+          scope_note: "20% 财产转让所得",
+          icon: "tax",
+          accent: "emerald",
+          mode: "formula",
+          schema: {
+            fields: [
+              { key: "income", label: "转让收入", type: "number", unit: "元", default: "1000000" },
+              { key: "cost", label: "股权原值", type: "number", unit: "元", default: "400000" },
+            ],
+            outputs: [
+              { key: "tax", label: "应纳个税", expr: "max(0, income - cost) * 0.2", format: "money", headline: true, strong: true },
+            ],
+            notes: ["个人所得税法"],
+          },
+        },
+      }),
+    });
+  });
+  await page.locator("#lc-new-btn").click();
+  await expect(page.locator("#ed-vis")).toHaveCount(0);
+  assert.equal(await page.locator("#ed-advanced-details").evaluate((el) => el.open), false);
+  await page.locator(".lc-ai-chip").nth(1).click();
+  await page.locator("#ed-ai-gen-btn").click();
+  await expect(page.locator("#ed-ai-meta")).toBeVisible();
+  await expect(page.locator("#ed-prev-res")).toContainText("120,000.00 元");
+  await page.locator("#ed-save-btn").click();
+  await expect(page.locator(".lc-scope-banner")).toBeVisible();
+  // Verify isolated sandbox iframe loads and calculates cleanly under strict CSP
+  await page.locator("#lc-new-btn").click();
+  await page.locator("#ed-title").fill("单机沙盒测算");
+  await page.locator("#ed-advanced-details > summary").click();
+  await page.locator('input[name="ed_mode"][value="sandbox"]').check({ force: true });
+  await page.locator("#ed-save-btn").click();
+  const lcFrameEl = page.locator("iframe.lc-sandbox-frame");
+  await expect(lcFrameEl).toBeVisible();
+  assert.equal(await lcFrameEl.getAttribute("sandbox"), "allow-scripts");
+  await expect(page.frameLocator("iframe.lc-sandbox-frame").locator("#out")).toContainText("1,020,000.00 元");
+  await page.unroute("**/api/legal-calc/ai-generate");
+  await page.locator("#lc-close").click();
+  await expect(page.locator("#legal-calc-backdrop")).not.toBeVisible();
+  assert.deepEqual(cspErrors, []);
+  // Verify combined ledger template download and mixed-track combined import via UI
+  await page.getByRole("button", { name: "案件台账", exact: true }).click();
+  await page.getByRole("button", { name: "导入台账", exact: true }).click();
+  const beforeCombined = await downloadCount();
+  await page.locator("[data-action=download-combined]").click();
+  const combinedFile = await waitDownload(beforeCombined);
+  const combinedHeaders = await readHeaders(combinedFile);
+  assert.equal(combinedHeaders.length, 26);
+  assert(combinedHeaders.includes("服务期限（仅顾问）"));
+  assert(combinedHeaders.includes("服务阶段（仅诉讼）"));
+  assert(combinedHeaders.includes("开票未付金额"));
+  const combinedImportPath = path.join(workspace, "combined-import.xlsx");
+  const combinedBin = await page.evaluate(() => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ["类型", "内部案号", "客户", "服务期限（仅顾问）", "原告（仅诉讼）", "被告（仅诉讼）", "案由（仅诉讼）", "服务阶段（仅诉讼）", "签约律师费"],
+        ["顾问", "COMB-UI-1", "综合顾问甲", "2026-01-01 至 2026-12-31", "", "", "", "", 36000],
+        ["诉讼", "COMB-UI-2", "综合原告乙", "", "综合原告乙", "综合被告丙", "合同纠纷", "一审,二审", 50000],
+      ]),
+      "综合案件",
+    );
+    return Array.from(new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" })));
+  });
+  fs.writeFileSync(combinedImportPath, Buffer.from(combinedBin));
+  const combinedChooser = page.waitForEvent("filechooser");
+  await page.locator("[data-action=choose-import][data-track=combined]").click();
+  await (await combinedChooser).setFiles(combinedImportPath);
+  await expect(page.locator("#modal-body")).toContainText("涉及业务线");
+  await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  await expect(page.locator("#case-table")).toContainText("COMB-UI-1");
+  await expect(page.locator("#case-table")).toContainText("COMB-UI-2");
   await page.screenshot({
     path: path.join(workspace, "软件更新.png"),
     fullPage: true,

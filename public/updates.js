@@ -76,13 +76,13 @@
             : "查看 " + esc(state.latestVersion) + " 更新") +
           "</button>" +
           (dl.status === "downloaded"
-            ? '<button data-update="install">打开安装包</button>'
+            ? '<button data-update="install">立即安装并重启</button>'
             : "") +
           "</div>"
         : "") +
       '<label class="update-toggle"><input id="automatic-updates" type="checkbox"' +
       (state?.automatic !== false ? " checked" : "") +
-      '>每 48 小时自动检查新版本</label><p class="hint">距上次自动检查满 48 小时后检查，重启应用不会重新计时。只检查版本信息，不上传案件。下载新版后，退出衡账并替换 App 即可。</p>' +
+      '>每 48 小时自动检查新版本</label><p class="hint">距上次自动检查满 48 小时后检查，重启应用不会重新计时。只检查版本信息，不上传案件。发现新版后可在应用内直接下载、自动替换并重启完成更新。</p>' +
       (state?.lastCheckedAt
         ? '<p class="hint">上次成功检查：' +
           esc(
@@ -99,15 +99,17 @@
       status = dl.status || "idle",
       percent = Math.max(0, Math.min(100, Number(dl.percent) || 0)),
       title =
-        status === "downloading"
-          ? "正在下载更新"
-          : status === "downloaded"
-            ? "更新下载完成"
-            : status === "error"
-              ? "更新下载未完成"
-              : "应用内下载更新",
+        status === "installing"
+          ? "正在安装并重启"
+          : status === "downloading"
+            ? "正在下载更新"
+            : status === "downloaded"
+              ? "更新已就绪"
+              : status === "error"
+                ? "更新下载未完成"
+                : "应用内直接更新",
       icon =
-        status === "downloading"
+        status === "downloading" || status === "installing"
           ? '<span class="update-spinner" aria-hidden="true"></span>'
           : status === "downloaded"
             ? '<span aria-hidden="true">✓</span>'
@@ -115,21 +117,25 @@
               ? '<span aria-hidden="true">!</span>'
               : '<span aria-hidden="true">↓</span>',
       hint =
-        status === "downloading"
-          ? "下载完成后可打开安装包。您可以继续使用衡账。"
-          : status === "downloaded"
-            ? "安装包已通过 SHA-256 校验。打开安装包后，请退出衡账并替换 App。"
-            : status === "error"
-              ? dl.message || "下载失败，请检查网络后重试。"
-              : "在衡账内直接下载 DMG 安装包，下载过程中可继续使用衡账；更新前建议先导出完整备份。",
+        status === "installing"
+          ? "正在后台解压并替换新版本，完成后将自动重新启动衡账…"
+          : status === "downloading"
+            ? "下载完成后将自动校验并安装重启，您也可以最小化继续使用衡账。"
+            : status === "downloaded"
+              ? "更新包已通过 SHA-256 校验，点击“立即安装并重启”即可自动替换并重新打开衡账。"
+              : status === "error"
+                ? dl.message || "下载失败，请检查网络后重试。"
+                : "点击“立即更新”在应用内直接下载并自动替换新版本，完成后自动重启衡账；更新前建议先导出完整备份。",
       actions =
-        status === "downloading"
-          ? '<button class="primary" data-update="later">最小化</button>'
-          : status === "downloaded"
-            ? '<button data-update="later">稍后安装</button><button data-update="release-page">前往发布页</button><button class="primary" data-update="install">打开安装包</button>'
-            : status === "error"
-              ? '<button data-update="later">稍后再说</button><button data-update="release-page">前往发布页</button><button class="primary" data-update="download">重新下载</button>'
-              : '<button data-update="later">稍后再说</button><button data-update="release-page">前往发布页</button><button class="primary" data-update="download">立即下载</button>';
+        status === "installing"
+          ? '<button class="primary" disabled>正在安装并重启…</button>'
+          : status === "downloading"
+            ? '<button class="primary" data-update="later">最小化</button>'
+            : status === "downloaded"
+              ? '<button data-update="later">稍后重启</button><button data-update="release-page">前往发布页</button><button class="primary" data-update="install">立即安装并重启</button>'
+              : status === "error"
+                ? '<button data-update="later">稍后再说</button><button data-update="release-page">前往发布页</button><button class="primary" data-update="download">重新更新</button>'
+                : '<button data-update="later">稍后再说</button><button data-update="release-page">前往发布页</button><button class="primary" data-update="download">立即更新</button>';
     return (
       '<div class="update-modal" data-update-modal>' +
       (state.status === "error"
@@ -203,16 +209,21 @@
           " · 剩余 " +
           esc(formatRemaining(dl)) +
           '</span></div><div class="page-actions"><button class="primary" data-update="details">查看进度</button></div>';
+      } else if (dl.status === "installing") {
+        banner.innerHTML =
+          "<div><strong>正在安装新版本 " +
+          esc(state.latestVersion) +
+          '</strong><span>正在后台替换新版本，完成后将自动重新启动衡账…</span></div>';
       } else if (dl.status === "downloaded") {
         banner.innerHTML =
           "<div><strong>新版本 " +
           esc(state.latestVersion) +
-          ' 已下载完成</strong><span>打开安装包后，退出衡账并替换 App 即可完成更新。</span></div><div class="page-actions"><button data-update="details">查看说明</button><button class="primary" data-update="install">打开安装包</button></div>';
+          ' 已准备就绪</strong><span>点击“立即安装并重启”即可自动替换并重新打开衡账。</span></div><div class="page-actions"><button data-update="details">查看说明</button><button class="primary" data-update="install">立即安装并重启</button></div>';
       } else {
         banner.innerHTML =
           "<div><strong>发现新版本 " +
           esc(state.latestVersion) +
-          '</strong><span>查看本次更新，可在应用内直接下载安装包。</span></div><div class="page-actions"><button class="primary" data-update="details">查看更新</button><button class="text-button" data-update="dismiss">暂不提醒此版本</button></div>';
+          '</strong><span>查看本次更新，可在应用内一键下载并自动更新重启。</span></div><div class="page-actions"><button class="primary" data-update="details">查看更新</button><button class="text-button" data-update="dismiss">暂不提醒此版本</button></div>';
       }
     }
   }
@@ -273,11 +284,27 @@
           );
           if (state?.download?.status === "error" && state.download.message)
             toast(state.download.message);
+          else if (
+            state?.download?.status === "downloaded" &&
+            Number(state.download.totalBytes) >= 1024 &&
+            $("#modal")?.open &&
+            $("#modal-body [data-update-modal]")
+          ) {
+            const mode = await bridge.openUpdateInstaller();
+            if (mode === "in-place")
+              toast("正在安装新版本，衡账即将自动重启…");
+            else
+              toast("已打开安装包，请退出衡账并将新版本拖入“应用程序”。");
+          }
           break;
-        case "install":
-          await bridge.openUpdateInstaller();
-          toast("已打开安装包，请退出衡账并将新版本拖入“应用程序”。");
+        case "install": {
+          const mode = await bridge.openUpdateInstaller();
+          if (mode === "in-place")
+            toast("正在安装新版本，衡账即将自动重启…");
+          else
+            toast("已打开安装包，请退出衡账并将新版本拖入“应用程序”。");
           break;
+        }
         case "release-page":
           await bridge.openUpdateReleasePage();
           break;

@@ -1,7 +1,18 @@
 import fs from "node:fs";
+import { execFile as execFileCb, spawn as spawnChild } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
+const defaultExecFile = promisify(execFileCb);
 const MAX_RESPONSE = 1024 * 1024;
+export function resolveTargetAppPath(execPath = process.execPath) {
+  if (process.platform !== "darwin" || typeof execPath !== "string") return null;
+  const bundle = path.resolve(execPath, "../../..");
+  if (path.basename(bundle) !== "衡账.app") return null;
+  if (bundle.startsWith("/Volumes/")) return "/Applications/衡账.app";
+  return bundle;
+}
 export const AUTOMATIC_CHECK_INTERVAL = 48 * 60 * 60 * 1000;
 const SAFE_DOWNLOAD_ERRORS = new Set([
   "下载服务暂时不可用",
@@ -80,6 +91,15 @@ export class ReleaseUpdates {
     onChange = () => {},
     now = () => Date.now(),
     timeoutMs = 12000,
+    execPath = process.execPath,
+    targetAppPath = undefined,
+    execFileImpl = defaultExecFile,
+    spawnImpl = (cmd, args, opts) => {
+      const child = spawnChild(cmd, args, opts);
+      child.unref();
+      return child;
+    },
+    pid = process.pid,
   }) {
     versionParts(currentVersion);
     if (!validRepository(repository)) throw Error("更新仓库配置无效");
@@ -91,10 +111,16 @@ export class ReleaseUpdates {
       onChange,
       now,
       timeoutMs,
+      execPath,
+      targetAppPath,
+      execFileImpl,
+      spawnImpl,
+      pid,
     });
     this.file = path.join(dataDir, "update-preferences.json");
     this.pending = null;
     this.downloadPending = null;
+    this.installPending = null;
     this.downloadController = null;
     this.installerPath = null;
     this.artifact = null;
@@ -465,7 +491,7 @@ export class ReleaseUpdates {
         percent: 100,
         bytesPerSecond: 0,
         remainingSeconds: 0,
-        message: "下载完成，可打开安装包。",
+        message: "下载完成，可立即安装并重启。",
       };
       return this.emit({});
     } catch (error) {
@@ -490,7 +516,8 @@ export class ReleaseUpdates {
   }
   getInstallerPath() {
     if (
-      this.download.status !== "downloaded" ||
+      (this.download.status !== "downloaded" &&
+        this.download.status !== "installing") ||
       !this.installerPath ||
       !this.artifact ||
       path.dirname(this.installerPath) !== this.downloadDir ||
@@ -500,5 +527,135 @@ export class ReleaseUpdates {
     )
       throw Error("请先完整下载更新安装包");
     return this.installerPath;
+  }
+  async installInstaller({ onBeforeQuit } = {}) {
+    const dmgPath = this.getInstallerPath();
+    if (this.installPending) return this.installPending;
+    const targetApp =
+      this.targetAppPath !== undefined
+        ? this.targetAppPath
+        : resolveTargetAppPath(this.execPath);
+    if (!targetApp) return { mode: "open-dmg", dmgPath };
+    try {
+      fs.accessSync(path.dirname(targetApp), fs.constants.W_OK);
+      if (fs.existsSync(targetApp))
+        fs.accessSync(targetApp, fs.constants.W_OK);
+    } catch {
+      return { mode: "open-dmg", dmgPath };
+    }
+    this.installPending = this.performInPlaceInstall(
+      dmgPath,
+      targetApp,
+      onBeforeQuit,
+    ).finally(() => {
+      this.installPending = null;
+    });
+    return this.installPending;
+  }
+  async performInPlaceInstall(dmgPath, targetApp, onBeforeQuit) {
+    const id = randomUUID(),
+      mountDir = path.join(os.tmpdir(), "hengzhang-mount-" + id),
+      stageDir = path.join(os.tmpdir(), "hengzhang-stage-" + id),
+      stagedApp = path.join(stageDir, "衡账.app");
+    this.download = {
+      ...this.download,
+      status: "installing",
+      message: "正在安装新版本，即将自动重启…",
+    };
+    this.emit({});
+    try {
+      await fs.promises.mkdir(mountDir, { recursive: true, mode: 0o700 });
+      await fs.promises.mkdir(stageDir, { recursive: true, mode: 0o700 });
+      let mounted = false;
+      try {
+        await this.execFileImpl("/usr/bin/hdiutil", [
+          "attach",
+          "-nobrowse",
+          "-readonly",
+          "-noverify",
+          "-noautoopen",
+          "-mountpoint",
+          mountDir,
+          dmgPath,
+        ]);
+        mounted = true;
+        const sourceApp = path.join(mountDir, "衡账.app"),
+          sourceBin = path.join(sourceApp, "Contents", "MacOS", "衡账");
+        if (!fs.existsSync(sourceBin))
+          throw Error("安装包内未找到衡账应用");
+        await this.execFileImpl("/usr/bin/ditto", [sourceApp, stagedApp]);
+      } finally {
+        if (mounted)
+          await this.execFileImpl("/usr/bin/hdiutil", [
+            "detach",
+            mountDir,
+            "-force",
+          ]).catch(() => {});
+        await fs.promises
+          .rm(mountDir, { recursive: true, force: true })
+          .catch(() => {});
+      }
+      await this.execFileImpl("/usr/bin/xattr", ["-cr", stagedApp]).catch(
+        () => {},
+      );
+      if (!fs.existsSync(path.join(stagedApp, "Contents", "MacOS", "衡账")))
+        throw Error("解压后的应用不完整");
+      const scriptPath = path.join(stageDir, "apply-update.sh");
+      const script = [
+        "#!/bin/sh",
+        'PID="$1"',
+        'STAGED_APP="$2"',
+        'TARGET_APP="$3"',
+        'STAGE_DIR="$4"',
+        'DMG_PATH="$5"',
+        'BACKUP_APP="${TARGET_APP}.backup.$$"',
+        "i=0",
+        'while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 100 ]; do',
+        "  /bin/sleep 0.2",
+        "  i=$((i + 1))",
+        "done",
+        'if [ -d "$TARGET_APP" ]; then',
+        '  /bin/rm -rf "$BACKUP_APP" 2>/dev/null || true',
+        '  /bin/mv "$TARGET_APP" "$BACKUP_APP" || exit 1',
+        "fi",
+        'if /bin/mv "$STAGED_APP" "$TARGET_APP" 2>/dev/null || /usr/bin/ditto "$STAGED_APP" "$TARGET_APP"; then',
+        '  /usr/bin/xattr -cr "$TARGET_APP" 2>/dev/null || true',
+        '  /bin/rm -rf "$BACKUP_APP" "$STAGE_DIR" "$DMG_PATH" 2>/dev/null || true',
+        '  /usr/bin/open -n "$TARGET_APP"',
+        "  exit 0",
+        "else",
+        '  /bin/rm -rf "$TARGET_APP" 2>/dev/null || true',
+        '  if [ -d "$BACKUP_APP" ]; then',
+        '    /bin/mv "$BACKUP_APP" "$TARGET_APP"',
+        '    /usr/bin/open -n "$TARGET_APP"',
+        "  fi",
+        '  /bin/rm -rf "$STAGE_DIR" 2>/dev/null || true',
+        "  exit 1",
+        "fi",
+        "",
+      ].join("\n");
+      await fs.promises.writeFile(scriptPath, script, { mode: 0o700 });
+      this.spawnImpl(
+        "/bin/sh",
+        [scriptPath, String(this.pid), stagedApp, targetApp, stageDir, dmgPath],
+        {
+          detached: true,
+          stdio: "ignore",
+        },
+      );
+      if (onBeforeQuit) onBeforeQuit();
+      return { mode: "in-place", targetApp, dmgPath, scriptPath };
+    } catch {
+      await fs.promises
+        .rm(stageDir, { recursive: true, force: true })
+        .catch(() => {});
+      this.download = {
+        ...this.download,
+        status: "downloaded",
+        message: "下载完成，可立即安装并重启。",
+      };
+      this.emit({});
+      return { mode: "open-dmg", dmgPath };
+    }
   }
 }

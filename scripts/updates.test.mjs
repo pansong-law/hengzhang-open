@@ -406,3 +406,69 @@ test("corrupted or truncated installer downloads are deleted and never exposed",
     }
   }
 });
+test("installInstaller extracts app from DMG in-place and spawns detached swap-and-relaunch script", async () => {
+  const spawned = [];
+  let quitCalled = false;
+  const s = fixture(
+    async (url) => {
+      if (url.endsWith("/releases/latest")) return response(release("1.0.4"));
+      return new Response(installerBytes, {
+        status: 200,
+        headers: { "content-length": String(installerBytes.length) },
+      });
+    },
+    {
+      targetAppPath: path.join(os.tmpdir(), "hengzhang-target-" + Date.now(), "衡账.app"),
+      execFileImpl: async (cmd, args) => {
+        if (cmd === "/usr/bin/hdiutil" && args[0] === "attach") {
+          const mountDir = args[args.indexOf("-mountpoint") + 1];
+          const binDir = path.join(mountDir, "衡账.app", "Contents", "MacOS");
+          fs.mkdirSync(binDir, { recursive: true });
+          fs.writeFileSync(path.join(binDir, "衡账"), "#!/bin/sh\necho 1.0.4\n", {
+            mode: 0o755,
+          });
+          return { stdout: "", stderr: "" };
+        }
+        if (cmd === "/usr/bin/ditto") {
+          const [from, to] = args;
+          fs.cpSync(from, to, { recursive: true });
+          return { stdout: "", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      },
+      spawnImpl: (cmd, args, opts) => {
+        spawned.push({ cmd, args, opts });
+      },
+      pid: 999999,
+    },
+  );
+  const targetApp = s.updates.targetAppPath;
+  fs.mkdirSync(path.join(targetApp, "Contents", "MacOS"), { recursive: true });
+  fs.writeFileSync(
+    path.join(targetApp, "Contents", "MacOS", "衡账"),
+    "#!/bin/sh\necho 1.0.3\n",
+    { mode: 0o755 },
+  );
+  try {
+    await s.updates.check({ manual: true });
+    await s.updates.downloadInstaller();
+    const res = await s.updates.installInstaller({
+      onBeforeQuit: () => {
+        quitCalled = true;
+      },
+    });
+    assert.equal(res.mode, "in-place");
+    assert.equal(quitCalled, true);
+    assert.equal(spawned.length, 1);
+    assert.equal(spawned[0].cmd, "/bin/sh");
+    const [scriptPath, pidArg, stagedApp, targetArg, stageDir] = spawned[0].args;
+    assert.equal(pidArg, "999999");
+    assert.equal(targetArg, targetApp);
+    assert(fs.existsSync(path.join(stagedApp, "Contents", "MacOS", "衡账")));
+    assert(fs.readFileSync(scriptPath, "utf8").includes('/usr/bin/open -n "$TARGET_APP"'));
+    fs.rmSync(stageDir, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(path.dirname(targetApp), { recursive: true, force: true });
+    s.close();
+  }
+});

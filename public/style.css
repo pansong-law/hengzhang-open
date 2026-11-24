@@ -1366,3 +1366,10 @@ dialog::backdrop {
   padding: 1px 5px;
   border-radius: 4px;
 }
+.setting-row-combined {
+  background: #f2f8fb;
+  border: 1px solid #c4dce8;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 10px 0 6px;
+}
