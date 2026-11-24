@@ -125,6 +125,9 @@ try {
   await page.locator("[name=plaintiff]").fill("桌面测试客户");
   await page.locator("[name=defendant]").fill("乙公司");
   await page.locator("[name=case_type]").fill("买卖合同纠纷");
+  const subject = page.locator("[name=subject_amount]");
+  await subject.pressSequentially("12345.67");
+  await expect(subject).toHaveValue("12345.67");
   await page.locator("[name=lawyer]").fill("外部律师");
   await page.locator("[name=contract_amount]").fill("10000.50");
   await page.locator("[name=invoice_amount]").fill("5000");
@@ -134,6 +137,7 @@ try {
   await page.getByRole("button", { name: "保存案件", exact: true }).click();
   await expect(page.getByRole("heading", { name: "案件详情" })).toBeVisible();
   await expect(page.locator("#modal-body")).toContainText("客户联系人");
+  await expect(page.locator("#modal-body")).toContainText("12,345.67");
   await expect(page.locator("#modal-body")).toContainText("案件进展");
   await expect(page.locator("#modal-body")).not.toContainText("收款流水");
   await expect(page.locator("#modal-body")).not.toContainText("费用说明");
@@ -151,6 +155,8 @@ try {
   assert.deepEqual(initialActions.slice(0, 4), ["edit", "collection", "payable", "progress"]);
   await expect(page.locator("#case-table")).toContainText("4,500.75");
   await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(subject).toHaveValue("12345.67");
+  await subject.fill("0．08");
   await expect(page.locator("[name=invoiced_unpaid]")).toHaveValue("4500.75");
   await page.locator("[name=invoiced_unpaid]").fill("3250.05");
   await page.getByRole("button", { name: "保存案件", exact: true }).click();
@@ -298,6 +304,7 @@ try {
   assert.equal(exported[0]["开票未付金额"], 3250.05);
   assert.equal(exported[0]["开票未付金额计算方式"], "手填");
   const macCase = (await request(page, "workspace")).cases.find((c) => c.case_no === "MAC-001");
+  assert.equal(macCase.subject_amount, 0.08);
   const reimportLedger = async (filename) => {
     // Import intentionally reads only the first sheet. Put the exported data
     // sheet first, preserving its cells and the new calculation-mode columns.
@@ -580,7 +587,9 @@ try {
   await page.locator("#ql-open-add").click();
   await page.locator("#ql-form-title").fill("桌面测试常用网");
   await page.locator("#ql-form-url").fill("https://law.example.org/");
+  const savedLink = page.waitForResponse((r) => r.url().endsWith("/api/quick-links") && r.request().method() === "POST");
   await page.locator("#ql-form-submit").click();
+  assert.equal((await savedLink).status(), 200);
   await expect(page.locator(".ql-card")).toHaveCount(7);
   const qlBox0 = await page.locator(".ql-card").nth(0).boundingBox();
   const qlBox2 = await page.locator(".ql-card").nth(2).boundingBox();

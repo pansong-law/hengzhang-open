@@ -1629,6 +1629,7 @@ async function editor(id = null, renew = false) {
     input("defendant", "被告", c.defendant) +
     input("third_party", "第三人", c.third_party) +
     input("case_type", "案由", c.case_type) +
+    '<label>标的额（元）<input name="subject_amount" inputmode="decimal" pattern="[0-9]+(?:[.．][0-9]{1,2})?" title="请输入非负金额，最多两位小数" value="' + esc(c.subject_amount ?? "") + '"></label>' +
     '</div><div class="party-choices"><span>从当事人中勾选客户，也可直接填写上方客户字段。</span><div id="client-choices" class="check-group"></div></div><div class="form-grid"><label>当前案件阶段<select name="case_stage">' +
     options(data.stages, c.case_stage, "待补充") +
     '</select></label><div><span class="small">合同服务阶段</span><div class="check-group">' +
@@ -1701,6 +1702,7 @@ async function editor(id = null, renew = false) {
       delete body.scope;
       delete body.service_start;
       delete body.service_end;
+      if (track === "litigation" && v.subject_amount) body.subject_amount = v.subject_amount.replace("．", ".");
       if (track === "advisory") {
         if (
           (v.service_start && !v.service_end) ||
@@ -2060,6 +2062,7 @@ async function openDetail(id) {
     ["客户联系人", c.client_contact],
     ["项目名称", c.name],
     ["案由", c.case_type],
+    ["标的额", c.subject_amount == null ? "" : money(c.subject_amount)],
     ["原告", c.plaintiff],
     ["被告", c.defendant],
     ["第三人", c.third_party],
